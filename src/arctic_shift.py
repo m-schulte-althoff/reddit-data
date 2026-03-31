@@ -81,12 +81,22 @@ def build_magnet_uri(infohash: str, trackers: Iterable[str]) -> str:
     return "&".join(parts)
 
 
+def _complete_marker(path: Path) -> Path:
+    """Return the sidecar marker path for a downloaded file."""
+    return path.with_suffix(path.suffix + ".complete")
+
+
+def _is_complete(path: Path) -> bool:
+    """Return True if *path* exists and has a .complete marker."""
+    return path.exists() and _complete_marker(path).exists()
+
+
 def missing_target_paths(
     target_paths: dict[str, list[str]],
 ) -> dict[str, list[str]]:
-    """Return only those target paths that are not yet present on disk."""
+    """Return target paths that are missing or incomplete on disk."""
     return {
-        kind: [r for r in relpaths if not (RAW_DIR / r).exists()]
+        kind: [r for r in relpaths if not _is_complete(RAW_DIR / r)]
         for kind, relpaths in target_paths.items()
     }
 
@@ -179,11 +189,13 @@ def _wait_for_files(
     handle: lt.torrent_handle,
     ti: lt.torrent_info,
     selected_indices: dict[str, list[int]],
+    index_to_path: dict[int, Path],
 ) -> None:
     fs = ti.files()
     needed = sorted(
         set(selected_indices["comments"] + selected_indices["submissions"])
     )
+    marked: set[int] = set()
     log.info("Downloading %d target files …", len(needed))
     while True:
         try:
@@ -200,6 +212,11 @@ def _wait_for_files(
             downloaded_bytes += min(done, size)
             if done < size:
                 incomplete.append(idx)
+            elif idx not in marked and idx in index_to_path:
+                p = index_to_path[idx]
+                _complete_marker(p).write_text(str(p.stat().st_size))
+                log.info("  %s complete — marker written.", p.name)
+                marked.add(idx)
         s = handle.status()
         pct = (100.0 * downloaded_bytes / total_bytes) if total_bytes else 100.0
         log.info(
@@ -243,19 +260,20 @@ def download() -> None:
     handle = _wait_for_metadata(ses, magnet_uri)
     ti, index_by_path = _map_files(handle)
     selected = _prioritize(handle, ti, index_by_path, missing)
-    _wait_for_files(handle, ti, selected)
+
+    # Map torrent file indices back to local paths for per-file marker writing.
+    idx_to_path: dict[int, Path] = {}
+    for relpaths in missing.values():
+        for rel in relpaths:
+            if rel in index_by_path:
+                idx_to_path[index_by_path[rel]] = RAW_DIR / rel
+
+    _wait_for_files(handle, ti, selected, idx_to_path)
 
     try:
         ses.remove_torrent(handle)
     except Exception:
         pass
-
-    # Sanity-check all expected files now exist.
-    for relpaths in target_paths.values():
-        for rel in relpaths:
-            p = RAW_DIR / rel
-            if not p.exists():
-                raise FileNotFoundError(f"Expected file missing after download: {p}")
 
     log.info("Download complete.")
 

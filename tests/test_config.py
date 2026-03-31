@@ -8,10 +8,11 @@ def test_start_month_derived_from_start_ts() -> None:
 
 
 def test_end_month_contains_last_relevant_second() -> None:
-    # END_EXCLUSIVE_TS is 2022-12-30 00:00:00 UTC.
-    # The last second in-window is 2022-12-29 23:59:59 -> December.
-    assert END_MONTH[0] == (END_EXCLUSIVE_TS.year)
-    assert END_MONTH[1] == 12
+    # The last second in-window is END_EXCLUSIVE_TS - 1s.
+    from datetime import timedelta
+
+    last_second = END_EXCLUSIVE_TS - timedelta(seconds=1)
+    assert END_MONTH == (last_second.year, last_second.month)
 
 
 def test_month_range_reasonable() -> None:
