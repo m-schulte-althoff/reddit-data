@@ -57,8 +57,8 @@ START_MONTH = (2022, 10)
 END_MONTH = (2022, 12)
 
 BASE_DIR = Path.cwd()
-RAW_DIR = BASE_DIR / "raw_arctic_shift"
-OUT_DIR = BASE_DIR / "output"
+RAW_DIR = BASE_DIR / "data" / "raw"
+OUT_DIR = BASE_DIR / "data" / "processed"
 
 COMMENTS_OUT = OUT_DIR / "comments_20221001_20221230.jsonl.zst"
 SUBMISSIONS_OUT = OUT_DIR / "submissions_20221001_20221230.jsonl.zst"
@@ -72,6 +72,7 @@ METADATA_POLL_SECONDS = 3
 DOWNLOAD_POLL_SECONDS = 10
 
 # zstd output compression level
+ZSTD_DECOMPRESSOR_MAX_WINDOW_SIZE = 2**31
 OUTPUT_ZSTD_LEVEL = 9
 
 
@@ -120,6 +121,15 @@ def build_magnet_uri(infohash: str, trackers: Iterable[str]) -> str:
 def ensure_dirs() -> None:
     RAW_DIR.mkdir(parents=True, exist_ok=True)
     OUT_DIR.mkdir(parents=True, exist_ok=True)
+
+
+def all_files_present(target_paths: Dict[str, List[str]]) -> bool:
+    """Return True if every target file already exists on disk."""
+    for relpaths in target_paths.values():
+        for rel in relpaths:
+            if not (RAW_DIR / rel).exists():
+                return False
+    return True
 
 
 def human_bytes(num: int) -> str:
@@ -291,7 +301,7 @@ def stream_filter_jsonl_zst(
 
                 print(f"Filtering {input_path} ...")
                 with input_path.open("rb") as fin_raw:
-                    dctx = zstd.ZstdDecompressor()
+                    dctx = zstd.ZstdDecompressor(max_window_size=ZSTD_DECOMPRESSOR_MAX_WINDOW_SIZE)
                     with dctx.stream_reader(fin_raw) as zin:
                         buffered = io.BufferedReader(zin)
 
@@ -369,17 +379,20 @@ def main() -> int:
     print(f"  comments   = {len(target_paths['comments'])}")
     print(f"  submissions= {len(target_paths['submissions'])}")
 
-    ses = create_session()
-    handle = add_torrent_and_wait_for_metadata(ses, magnet_uri)
-    ti, index_by_path = map_files(handle)
-    selected = prioritize_only_targets(handle, ti, index_by_path, target_paths)
-    wait_for_selected_files(handle, ti, selected)
+    if all_files_present(target_paths):
+        print("\nAll target files already present on disk — skipping torrent download.")
+    else:
+        ses = create_session()
+        handle = add_torrent_and_wait_for_metadata(ses, magnet_uri)
+        ti, index_by_path = map_files(handle)
+        selected = prioritize_only_targets(handle, ti, index_by_path, target_paths)
+        wait_for_selected_files(handle, ti, selected)
 
-    # Remove torrent from session before reading/deleting files.
-    try:
-        ses.remove_torrent(handle)
-    except Exception:
-        pass
+        # Remove torrent from session before reading/deleting files.
+        try:
+            ses.remove_torrent(handle)
+        except Exception:
+            pass
 
     comment_input_paths = [RAW_DIR / rel for rel in target_paths["comments"]]
     submission_input_paths = [RAW_DIR / rel for rel in target_paths["submissions"]]
