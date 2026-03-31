@@ -15,7 +15,7 @@ import json
 import sys
 import time
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Dict, Iterable, List, Tuple
 
@@ -45,16 +45,17 @@ TRACKERS = [
 #END_EXCLUSIVE_TS = datetime(2023, 12, 1, 0, 0, 0, tzinfo=timezone.utc)
 
 START_TS = datetime(2022, 10, 1, 0, 0, 0, tzinfo=timezone.utc)
-END_EXCLUSIVE_TS = datetime(2022, 12, 30, 0, 0, 0, tzinfo=timezone.utc)
+END_EXCLUSIVE_TS = datetime(2023, 7, 30, 0, 0, 0, tzinfo=timezone.utc)
 
 START_EPOCH = int(START_TS.timestamp())
 END_EXCLUSIVE_EPOCH = int(END_EXCLUSIVE_TS.timestamp())
 
-#START_MONTH = (2021, 5)
-#END_MONTH = (2023, 11)
-
-START_MONTH = (2022, 10)
-END_MONTH = (2022, 12)
+# Derive the month range from the timestamp window.
+# START_TS  -> first month to download.
+# END_EXCLUSIVE_TS is exclusive, so the last needed month contains (END_EXCLUSIVE_TS - 1 second).
+START_MONTH = (START_TS.year, START_TS.month)
+_end_incl = END_EXCLUSIVE_TS - timedelta(seconds=1)
+END_MONTH = (_end_incl.year, _end_incl.month)
 
 BASE_DIR = Path.cwd()
 RAW_DIR = BASE_DIR / "data" / "raw"
@@ -123,13 +124,12 @@ def ensure_dirs() -> None:
     OUT_DIR.mkdir(parents=True, exist_ok=True)
 
 
-def all_files_present(target_paths: Dict[str, List[str]]) -> bool:
-    """Return True if every target file already exists on disk."""
-    for relpaths in target_paths.values():
-        for rel in relpaths:
-            if not (RAW_DIR / rel).exists():
-                return False
-    return True
+def missing_target_paths(target_paths: Dict[str, List[str]]) -> Dict[str, List[str]]:
+    """Return a dict with only the target paths not yet present on disk."""
+    missing: Dict[str, List[str]] = {}
+    for kind, relpaths in target_paths.items():
+        missing[kind] = [rel for rel in relpaths if not (RAW_DIR / rel).exists()]
+    return missing
 
 
 def human_bytes(num: int) -> str:
@@ -362,12 +362,55 @@ def stream_filter_jsonl_zst(
 
 
 # =========================
+# Verification
+# =========================
+
+def verify_downloads(target_paths: Dict[str, List[str]]) -> bool:
+    """Check that every target file exists, is non-empty, and is valid zstd."""
+    all_ok = True
+    for kind, relpaths in target_paths.items():
+        for rel in relpaths:
+            path = RAW_DIR / rel
+            label = f"  [{kind}] {rel}"
+
+            if not path.exists():
+                print(f"{label}  MISSING")
+                all_ok = False
+                continue
+
+            size = path.stat().st_size
+            if size == 0:
+                print(f"{label}  EMPTY (0 bytes)")
+                all_ok = False
+                continue
+
+            # Try to read the first few decompressed bytes to confirm a valid zstd frame.
+            try:
+                dctx = zstd.ZstdDecompressor(max_window_size=ZSTD_DECOMPRESSOR_MAX_WINDOW_SIZE)
+                with path.open("rb") as f:
+                    with dctx.stream_reader(f) as zin:
+                        chunk = zin.read(4096)
+                        if not chunk:
+                            print(f"{label}  WARN  {human_bytes(size)} on disk but decompresses to 0 bytes")
+                            all_ok = False
+                            continue
+            except Exception as exc:
+                print(f"{label}  CORRUPT  {human_bytes(size)} on disk — {exc}")
+                all_ok = False
+                continue
+
+            print(f"{label}  OK  {human_bytes(size)}")
+
+    return all_ok
+
+
+# =========================
 # Main
 # =========================
 
-def main() -> int:
+def cmd_download() -> int:
+    """Download missing monthly files via torrent."""
     ensure_dirs()
-
     target_paths = build_target_paths()
     magnet_uri = build_magnet_uri(TORRENT_INFOHASH, TRACKERS)
 
@@ -379,16 +422,19 @@ def main() -> int:
     print(f"  comments   = {len(target_paths['comments'])}")
     print(f"  submissions= {len(target_paths['submissions'])}")
 
-    if all_files_present(target_paths):
+    missing = missing_target_paths(target_paths)
+    total_missing = sum(len(v) for v in missing.values())
+
+    if total_missing == 0:
         print("\nAll target files already present on disk — skipping torrent download.")
     else:
+        print(f"\n{total_missing} file(s) missing — starting torrent download.")
         ses = create_session()
         handle = add_torrent_and_wait_for_metadata(ses, magnet_uri)
         ti, index_by_path = map_files(handle)
-        selected = prioritize_only_targets(handle, ti, index_by_path, target_paths)
+        selected = prioritize_only_targets(handle, ti, index_by_path, missing)
         wait_for_selected_files(handle, ti, selected)
 
-        # Remove torrent from session before reading/deleting files.
         try:
             ses.remove_torrent(handle)
         except Exception:
@@ -401,7 +447,28 @@ def main() -> int:
         if not p.exists():
             raise FileNotFoundError(f"Expected downloaded file missing: {p}")
 
+    print("\nDownload complete.")
+    return 0
+
+
+def cmd_filter() -> int:
+    """Filter downloaded raw files into the target time window and write compressed output."""
+    ensure_dirs()
+    target_paths = build_target_paths()
+    magnet_uri = build_magnet_uri(TORRENT_INFOHASH, TRACKERS)
+
+    comment_input_paths = [RAW_DIR / rel for rel in target_paths["comments"]]
+    submission_input_paths = [RAW_DIR / rel for rel in target_paths["submissions"]]
+
+    for p in comment_input_paths + submission_input_paths:
+        if not p.exists():
+            raise FileNotFoundError(
+                f"Raw file missing: {p}\nRun 'download' first."
+            )
+
+    print("Filtering comments ...")
     comments_stats = stream_filter_jsonl_zst(comment_input_paths, COMMENTS_OUT)
+    print("Filtering submissions ...")
     submissions_stats = stream_filter_jsonl_zst(submission_input_paths, SUBMISSIONS_OUT)
 
     if DELETE_RAW_AFTER_FILTER:
@@ -436,8 +503,35 @@ def main() -> int:
     print(f"  {COMMENTS_OUT}")
     print(f"  {SUBMISSIONS_OUT}")
     print(f"  {MANIFEST_OUT}")
-
     return 0
+
+
+def cmd_verify() -> int:
+    """Verify that all target files are present and valid zstd archives."""
+    target_paths = build_target_paths()
+    print("Verifying downloaded files ...\n")
+    ok = verify_downloads(target_paths)
+    if ok:
+        print("\nAll files OK.")
+        return 0
+    else:
+        print("\nSome files are missing or corrupt.")
+        return 1
+
+
+COMMANDS = {
+    "download": cmd_download,
+    "filter": cmd_filter,
+    "verify": cmd_verify,
+}
+
+
+def main() -> int:
+    if len(sys.argv) < 2 or sys.argv[1] not in COMMANDS:
+        print(f"Usage: {sys.argv[0]} <command>")
+        print(f"Commands: {', '.join(COMMANDS)}")
+        return 2
+    return COMMANDS[sys.argv[1]]()
 
 
 if __name__ == "__main__":
