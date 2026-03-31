@@ -1,2 +1,13 @@
-output/
 data/
+output/
+logs/
+*.duckdb
+*.duckdb.wal
+__pycache__/
+*.pyc
+.uv/
+.venv/
+.python-version
+.pytest_cache/
+.ruff_cache/
+uv.lock
