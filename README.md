@@ -34,6 +34,9 @@ uv run python3 main.py sample
 The default pipeline uses the torrent source (`download` → `filter`).
 The Hugging Face alternative is accessible via `hf-extract` / `hf-list`.
 
+For Arctic Shift torrents, the downloader uses the legacy bundle through 2023-12
+and switches to monthly torrents for 2024-01 onward.
+
 ## Configuration
 
 Edit `src/config.py` to change:

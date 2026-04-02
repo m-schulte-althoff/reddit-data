@@ -5,6 +5,7 @@ from __future__ import annotations
 import io
 import json
 import logging
+import re
 import time
 from dataclasses import dataclass
 from datetime import timedelta
@@ -21,7 +22,9 @@ from src.config import (
     END_EXCLUSIVE_EPOCH,
     END_EXCLUSIVE_TS,
     END_MONTH,
+    LEGACY_BUNDLE_END_MONTH,
     METADATA_POLL_SECONDS,
+    MONTHLY_TORRENT_INFOHASHES,
     OUTPUT_ZSTD_LEVEL,
     PROCESSED_DIR,
     RAW_DIR,
@@ -34,6 +37,7 @@ from src.config import (
 )
 
 log = logging.getLogger(__name__)
+LEGACY_BUNDLE_NAME = "reddit-2005-06-to-2023-12"
 
 
 # ── Data model ───────────────────────────────────────────────────────────────
@@ -46,6 +50,21 @@ class MonthRef:
     @property
     def ym(self) -> str:
         return f"{self.year:04d}-{self.month:02d}"
+
+
+@dataclass(frozen=True)
+class TorrentBatch:
+    infohash: str
+    display_name: str
+    target_paths: dict[str, list[str]]
+
+
+@dataclass(frozen=True)
+class ResolvedTorrentFile:
+    index: int
+    kind: str
+    canonical_relpath: str
+    actual_relpath: str
 
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
@@ -74,9 +93,13 @@ def build_target_paths() -> dict[str, list[str]]:
     }
 
 
-def build_magnet_uri(infohash: str, trackers: Iterable[str]) -> str:
+def build_magnet_uri(
+    infohash: str,
+    trackers: Iterable[str],
+    display_name: str = LEGACY_BUNDLE_NAME,
+) -> str:
     """Construct a magnet URI from an info-hash and tracker list."""
-    parts = [f"magnet:?xt=urn:btih:{infohash}", "dn=reddit-2005-06-to-2023-12"]
+    parts = [f"magnet:?xt=urn:btih:{infohash}", f"dn={display_name}"]
     parts.extend(f"tr={t}" for t in trackers)
     return "&".join(parts)
 
@@ -108,6 +131,49 @@ def _human_bytes(num: int) -> str:
             return f"{n:.2f}{unit}"
         n /= 1024.0
     return f"{num}B"
+
+
+def _month_from_relpath(relpath: str) -> MonthRef:
+    match = re.search(r"R[CS]_(\d{4})-(\d{2})\.zst$", relpath)
+    if match is None:
+        raise ValueError(f"Could not extract month from path: {relpath}")
+    return MonthRef(int(match.group(1)), int(match.group(2)))
+
+
+def _split_torrent_batches(target_paths: dict[str, list[str]]) -> list[TorrentBatch]:
+    legacy_targets: dict[str, list[str]] = {"comments": [], "submissions": []}
+    monthly_targets: dict[str, dict[str, list[str]]] = {}
+
+    for kind, relpaths in target_paths.items():
+        for relpath in relpaths:
+            month = _month_from_relpath(relpath)
+            if (month.year, month.month) <= LEGACY_BUNDLE_END_MONTH:
+                legacy_targets[kind].append(relpath)
+                continue
+
+            infohash = MONTHLY_TORRENT_INFOHASHES.get(month.ym)
+            if infohash is None:
+                raise RuntimeError(
+                    f"No monthly torrent infohash configured for Arctic Shift month {month.ym}"
+                )
+            batch_targets = monthly_targets.setdefault(
+                month.ym,
+                {"comments": [], "submissions": []},
+            )
+            batch_targets[kind].append(relpath)
+
+    batches: list[TorrentBatch] = []
+    if any(legacy_targets.values()):
+        batches.append(TorrentBatch(TORRENT_INFOHASH, LEGACY_BUNDLE_NAME, legacy_targets))
+    for month_key in sorted(monthly_targets):
+        batches.append(
+            TorrentBatch(
+                MONTHLY_TORRENT_INFOHASHES[month_key],
+                f"reddit-{month_key}",
+                monthly_targets[month_key],
+            )
+        )
+    return batches
 
 
 # ── Torrent session ─────────────────────────────────────────────────────────
@@ -168,34 +234,46 @@ def _prioritize(
     ti: lt.torrent_info,
     index_by_path: dict[str, int],
     target_paths: dict[str, list[str]],
-) -> dict[str, list[int]]:
+) -> tuple[dict[str, list[int]], list[ResolvedTorrentFile]]:
     fs = ti.files()
     priorities = [0] * fs.num_files()
     selected: dict[str, list[int]] = {"comments": [], "submissions": []}
+    resolved: list[ResolvedTorrentFile] = []
     for kind, relpaths in target_paths.items():
         for relpath in relpaths:
-            if relpath not in index_by_path:
-                raise RuntimeError(
-                    f"Target file not found in torrent metadata: {relpath}"
-                )
-            idx = index_by_path[relpath]
+            matched_relpath = relpath
+            if relpath in index_by_path:
+                idx = index_by_path[relpath]
+            else:
+                basename = Path(relpath).name
+                basename_matches = [p for p in index_by_path if Path(p).name == basename]
+                if len(basename_matches) == 1:
+                    matched_relpath = basename_matches[0]
+                    idx = index_by_path[matched_relpath]
+                elif basename_matches:
+                    raise RuntimeError(
+                        f"Target file basename is ambiguous in torrent metadata: {relpath}"
+                    )
+                else:
+                    raise RuntimeError(
+                        f"Target file not found in torrent metadata: {relpath}"
+                    )
             priorities[idx] = 4
             selected[kind].append(idx)
+            resolved.append(ResolvedTorrentFile(idx, kind, relpath, matched_relpath))
     handle.prioritize_files(priorities)
-    return selected
+    return selected, resolved
 
 
 def _wait_for_files(
     handle: lt.torrent_handle,
     ti: lt.torrent_info,
     selected_indices: dict[str, list[int]],
-    index_to_path: dict[int, Path],
 ) -> None:
     fs = ti.files()
     needed = sorted(
         set(selected_indices["comments"] + selected_indices["submissions"])
     )
-    marked: set[int] = set()
     log.info("Downloading %d target files …", len(needed))
     while True:
         try:
@@ -212,11 +290,6 @@ def _wait_for_files(
             downloaded_bytes += min(done, size)
             if done < size:
                 incomplete.append(idx)
-            elif idx not in marked and idx in index_to_path:
-                p = index_to_path[idx]
-                _complete_marker(p).write_text(str(p.stat().st_size))
-                log.info("  %s complete — marker written.", p.name)
-                marked.add(idx)
         s = handle.status()
         pct = (100.0 * downloaded_bytes / total_bytes) if total_bytes else 100.0
         log.info(
@@ -233,13 +306,28 @@ def _wait_for_files(
         time.sleep(DOWNLOAD_POLL_SECONDS)
 
 
+def _finalize_downloaded_files(index_to_paths: dict[int, tuple[Path, Path]]) -> None:
+    for actual_path, canonical_path in index_to_paths.values():
+        canonical_path.parent.mkdir(parents=True, exist_ok=True)
+        if actual_path != canonical_path:
+            if actual_path.exists():
+                actual_path.replace(canonical_path)
+            elif not canonical_path.exists():
+                raise FileNotFoundError(
+                    f"Downloaded file missing after torrent completed: {actual_path}"
+                )
+        if not canonical_path.exists():
+            raise FileNotFoundError(f"Expected downloaded file not found: {canonical_path}")
+        _complete_marker(canonical_path).write_text(str(canonical_path.stat().st_size))
+        log.info("  %s complete — marker written.", canonical_path.name)
+
+
 # ── Public API ───────────────────────────────────────────────────────────────
 
 def download() -> None:
     """Download missing monthly .zst files via BitTorrent."""
     RAW_DIR.mkdir(parents=True, exist_ok=True)
     target_paths = build_target_paths()
-    magnet_uri = build_magnet_uri(TORRENT_INFOHASH, TRACKERS)
 
     log.info("Target window: %s -> %s", START_TS.isoformat(), END_EXCLUSIVE_TS.isoformat())
     log.info(
@@ -256,24 +344,34 @@ def download() -> None:
         return
 
     log.info("%d file(s) missing — starting torrent.", total_missing)
-    ses = _create_session()
-    handle = _wait_for_metadata(ses, magnet_uri)
-    ti, index_by_path = _map_files(handle)
-    selected = _prioritize(handle, ti, index_by_path, missing)
+    for batch in _split_torrent_batches(missing):
+        batch_total = sum(len(v) for v in batch.target_paths.values())
+        magnet_uri = build_magnet_uri(batch.infohash, TRACKERS, batch.display_name)
+        log.info(
+            "Starting torrent batch %s for %d file(s).",
+            batch.display_name,
+            batch_total,
+        )
+        ses = _create_session()
+        handle = _wait_for_metadata(ses, magnet_uri)
+        ti, index_by_path = _map_files(handle)
+        selected, resolved = _prioritize(handle, ti, index_by_path, batch.target_paths)
 
-    # Map torrent file indices back to local paths for per-file marker writing.
-    idx_to_path: dict[int, Path] = {}
-    for relpaths in missing.values():
-        for rel in relpaths:
-            if rel in index_by_path:
-                idx_to_path[index_by_path[rel]] = RAW_DIR / rel
+        idx_to_paths = {
+            item.index: (
+                RAW_DIR / item.actual_relpath,
+                RAW_DIR / item.canonical_relpath,
+            )
+            for item in resolved
+        }
 
-    _wait_for_files(handle, ti, selected, idx_to_path)
+        _wait_for_files(handle, ti, selected)
+        _finalize_downloaded_files(idx_to_paths)
 
-    try:
-        ses.remove_torrent(handle)
-    except Exception:
-        pass
+        try:
+            ses.remove_torrent(handle)
+        except Exception:
+            pass
 
     log.info("Download complete.")
 
@@ -357,7 +455,6 @@ def filter_raw() -> None:
     """Filter downloaded raw .zst files into the configured time window."""
     PROCESSED_DIR.mkdir(parents=True, exist_ok=True)
     target_paths = build_target_paths()
-    magnet_uri = build_magnet_uri(TORRENT_INFOHASH, TRACKERS)
 
     start_fmt = START_TS.strftime("%Y%m%d")
     end_fmt = (END_EXCLUSIVE_TS - timedelta(seconds=1)).strftime("%Y%m%d")
@@ -384,8 +481,18 @@ def filter_raw() -> None:
     manifest = {
         "source": {
             "name": "Arctic Shift torrent",
-            "infohash": TORRENT_INFOHASH,
-            "magnet_uri": magnet_uri,
+            "batches": [
+                {
+                    "display_name": batch.display_name,
+                    "infohash": batch.infohash,
+                    "magnet_uri": build_magnet_uri(
+                        batch.infohash,
+                        TRACKERS,
+                        batch.display_name,
+                    ),
+                }
+                for batch in _split_torrent_batches(target_paths)
+            ],
         },
         "window": {
             "start_inclusive_utc": START_TS.isoformat(),
