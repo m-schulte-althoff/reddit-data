@@ -147,7 +147,8 @@ def _filter_file(
                 m_sub = _SUB_PREFIX_RE.search(line)
                 if m_sub is None:
                     continue
-                sub_value = m_sub.group(1).lower()
+                # JSON may encode '/' as '\/' — normalise before comparison.
+                sub_value = m_sub.group(1).replace(b"\\/", b"/").lower()
                 if sub_value not in subreddits_bytes:
                     continue
 

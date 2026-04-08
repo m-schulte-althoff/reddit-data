@@ -179,6 +179,42 @@ def test_filter_case_insensitive(raw_tree: Path) -> None:
     assert records[0]["id"] == "c5"
 
 
+def test_filter_json_escaped_slash(tmp_path: Path) -> None:
+    """Real Arctic Shift data encodes '/' as '\\/' in JSON — filter must handle."""
+    raw_dir = tmp_path / "data" / "raw"
+    out_dir = tmp_path / "data" / "processed"
+    comments_dir = raw_dir / "reddit" / "comments"
+
+    # Simulate real data: orjson doesn't escape '/', so write raw bytes manually.
+    import zstandard as zstd
+
+    escaped_records = (
+        b'{"id":"e1","subreddit":"askreddit","subreddit_name_prefixed":"r\\/askreddit","created_utc":1654100000,"score":1}\n'
+        b'{"id":"e2","subreddit":"science","subreddit_name_prefixed":"r\\/science","created_utc":1654200000,"score":2}\n'
+        b'{"id":"e3","subreddit":"funny","subreddit_name_prefixed":"r\\/funny","created_utc":1654300000,"score":3}\n'
+    )
+    comments_dir.mkdir(parents=True, exist_ok=True)
+    cctx = zstd.ZstdCompressor(level=3)
+    with (comments_dir / "RC_2022-06.zst").open("wb") as f:
+        with cctx.stream_writer(f) as zout:
+            zout.write(escaped_records)
+
+    subreddits = {"r/askreddit", "r/science"}
+    result = filter_by_subreddit(
+        kind="comments",
+        subreddits=subreddits,
+        output_tag="test_escaped",
+        raw_dir=raw_dir,
+        output_dir=out_dir,
+        resume=False,
+    )
+
+    assert result["rows_written"] == 2
+    records = read_zst_jsonl(Path(result["output_file"]))
+    ids = {r["id"] for r in records}
+    assert ids == {"e1", "e2"}
+
+
 # ── Resume ───────────────────────────────────────────────────────────────────
 
 
