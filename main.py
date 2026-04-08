@@ -71,6 +71,73 @@ def cmd_filter() -> int:
     return 0
 
 
+def cmd_filter_subreddit() -> int:
+    """Filter raw data by the Chan-2025 subreddit list.
+
+    Supports CLI flags:
+        --months 2022-06,2023-06   restrict to specific months
+        --start  2022-06-01        inclusive start (ISO date)
+        --end    2022-07-01        exclusive end (ISO date)
+        --tag    chan2025           output filename tag
+        --no-resume                start fresh instead of resuming
+    """
+    import argparse
+    from datetime import datetime, timezone
+
+    from src.filter import filter_all
+
+    parser = argparse.ArgumentParser(prog="filter-subreddit")
+    parser.add_argument("--months", type=str, default=None,
+                        help="Comma-separated YYYY-MM months")
+    parser.add_argument("--start", type=str, default=None,
+                        help="Inclusive start date (YYYY-MM-DD)")
+    parser.add_argument("--end", type=str, default=None,
+                        help="Exclusive end date (YYYY-MM-DD)")
+    parser.add_argument("--tag", type=str, default="chan2025",
+                        help="Output filename tag")
+    parser.add_argument("--no-resume", action="store_true",
+                        help="Do not resume from previous run")
+
+    # argv[0] is the script, argv[1] is the command name.
+    args = parser.parse_args(sys.argv[2:])
+
+    months = None
+    if args.months:
+        months = []
+        for part in args.months.split(","):
+            y, m = part.strip().split("-")
+            months.append((int(y), int(m)))
+
+    start_epoch = None
+    if args.start:
+        start_epoch = int(
+            datetime.strptime(args.start, "%Y-%m-%d")
+            .replace(tzinfo=timezone.utc)
+            .timestamp()
+        )
+
+    end_epoch = None
+    if args.end:
+        end_epoch = int(
+            datetime.strptime(args.end, "%Y-%m-%d")
+            .replace(tzinfo=timezone.utc)
+            .timestamp()
+        )
+
+    results = filter_all(
+        output_tag=args.tag,
+        months=months,
+        start_epoch=start_epoch,
+        end_epoch=end_epoch,
+        resume=not args.no_resume,
+    )
+    for kind, stats in results.items():
+        logging.getLogger(__name__).info(
+            "%s: %d rows written → %s", kind, stats["rows_written"], stats["output_file"]
+        )
+    return 0
+
+
 def cmd_analyse() -> int:
     from src.analysis import analyse
     from views import write_summary_csv
@@ -114,6 +181,7 @@ COMMANDS: dict[str, tuple[callable, str]] = {  # type: ignore[type-arg]
     "download": (cmd_download, "Download missing raw .zst files via torrent"),
     "verify": (cmd_verify, "Check raw files are present and valid"),
     "filter": (cmd_filter, "Filter raw data to configured time window"),
+    "filter-subreddit": (cmd_filter_subreddit, "Filter by subreddit list (Chan-2025)"),
     "analyse": (cmd_analyse, "Descriptive statistics for raw data"),
     "sample": (cmd_sample, "Reservoir-sample records to CSV"),
     "hf-extract": (cmd_hf_extract, "Extract data via Hugging Face"),

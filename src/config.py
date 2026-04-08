@@ -9,8 +9,8 @@ from pathlib import Path
 # ── Time window ──────────────────────────────────────────────────────────────
 # 18 months before 2022-11-30 and 12 months after, interpreted literally.
 # Adjust these two values to change the extraction window.
-START_TS = datetime(2024, 3, 1, 0, 0, 0, tzinfo=timezone.utc)
-END_EXCLUSIVE_TS = datetime(2024, 4, 1, 0, 0, 0, tzinfo=timezone.utc)
+START_TS = datetime(2022, 6, 1, 0, 0, 0, tzinfo=timezone.utc)
+END_EXCLUSIVE_TS = datetime(2022, 7, 1, 0, 0, 0, tzinfo=timezone.utc)
 
 START_EPOCH: int = int(START_TS.timestamp())
 END_EXCLUSIVE_EPOCH: int = int(END_EXCLUSIVE_TS.timestamp())
@@ -77,6 +77,11 @@ METADATA_POLL_SECONDS: int = 3
 DOWNLOAD_POLL_SECONDS: int = 10
 ZSTD_MAX_WINDOW_SIZE: int = 2**31
 OUTPUT_ZSTD_LEVEL: int = 9
+
+# ── Filtering ────────────────────────────────────────────────────────────────
+INPUT_DIR = BASE_DIR / "input"
+SUBREDDIT_LIST_PATH = INPUT_DIR / "subreddit-list-Chan-2025.txt"
+FILTER_READ_BUFFER: int = 16 * 1024 * 1024  # 16 MB read buffer
 
 # ── Analysis ─────────────────────────────────────────────────────────────────
 SAMPLE_SIZE: int = 500

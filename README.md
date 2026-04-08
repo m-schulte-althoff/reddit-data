@@ -53,6 +53,7 @@ Edit `src/config.py` to change:
 | `download` | Download missing raw `.zst` files via Arctic Shift torrent. |
 | `verify` | Check that all raw files exist, are non-empty, and have valid zstd headers. |
 | `filter` | Merge and filter raw files into `data/processed/` within the time window. |
+| `filter-subreddit` | Filter raw data by subreddit list (Chan-2025). Supports resume, time window, and month selection. |
 | `analyse` | Compute descriptive stats (row counts, timestamp range, top subreddits/authors, score stats). |
 | `sample` | Reservoir-sample records and write to `output/tables/`. |
 | `hf-extract` | Extract filtered parquet from the Hugging Face mirror. |
@@ -66,6 +67,7 @@ Edit `src/config.py` to change:
 ├── src/
 │   ├── config.py            # Shared configuration
 │   ├── arctic_shift.py      # Torrent download, filter, verify
+│   ├── filter.py            # Subreddit filtering with resume
 │   ├── hugging_face.py      # HF parquet extraction
 │   └── analysis.py          # Descriptive stats & sampling
 ├── data/
@@ -92,6 +94,36 @@ uv run python3 main.py sample
 ```
 
 All outputs are deterministic (fixed random seed, stable sorting).
+
+## Filter by subreddit
+
+The `filter-subreddit` command streams raw `.zst` files and keeps only records
+whose `subreddit_name_prefixed` matches the list in
+`input/subreddit-list-Chan-2025.txt`. Filtering is memory-safe (pure streaming),
+resumable, and uses byte-level regex to avoid full JSON parsing of non-matching
+lines.
+
+```bash
+# Filter all available raw data with the default subreddit list
+uv run python3 main.py filter-subreddit
+
+# Restrict to specific months
+uv run python3 main.py filter-subreddit --months 2022-06,2023-06
+
+# Restrict to a custom time window (ISO dates, start inclusive / end exclusive)
+uv run python3 main.py filter-subreddit --start 2022-06-01 --end 2022-07-01
+
+# Custom output tag and fresh run (no resume)
+uv run python3 main.py filter-subreddit --tag chan2025 --no-resume
+```
+
+Output files are written to `data/processed/`:
+- `filter-comments-<tag>.jsonl.zst`
+- `filter-submissions-<tag>.jsonl.zst`
+
+A sidecar `.progress.json` file tracks which input files have been processed.
+On subsequent runs the already-completed files are skipped and new data is
+appended as additional zstd frames.
 
 ## Development
 
