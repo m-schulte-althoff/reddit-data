@@ -10,11 +10,13 @@ import time
 from dataclasses import dataclass
 from datetime import timedelta
 from pathlib import Path
-from typing import Iterable
+from typing import TYPE_CHECKING, Iterable
 
-import libtorrent as lt
 import orjson
 import zstandard as zstd
+
+if TYPE_CHECKING:
+    import libtorrent as lt
 
 from src.config import (
     DELETE_RAW_AFTER_FILTER,
@@ -178,7 +180,21 @@ def _split_torrent_batches(target_paths: dict[str, list[str]]) -> list[TorrentBa
 
 # ── Torrent session ─────────────────────────────────────────────────────────
 
+def _import_libtorrent():  # type: ignore[no-untyped-def]
+    """Import libtorrent at runtime; raise a clear error if missing."""
+    try:
+        import libtorrent as lt
+    except ModuleNotFoundError:
+        raise ModuleNotFoundError(
+            "libtorrent is required for torrent commands. "
+            "Install it with: uv sync --extra torrent  "
+            "(Linux may also need: sudo apt install python3-libtorrent)"
+        ) from None
+    return lt
+
+
 def _create_session() -> lt.session:
+    lt = _import_libtorrent()
     ses = lt.session()
     try:
         ses.listen_on(6881, 6891)
@@ -198,6 +214,7 @@ def _wait_for_metadata(
     ses: lt.session,
     magnet_uri: str,
 ) -> lt.torrent_handle:
+    lt = _import_libtorrent()
     params = {
         "save_path": str(RAW_DIR),
         "storage_mode": lt.storage_mode_t.storage_mode_sparse,

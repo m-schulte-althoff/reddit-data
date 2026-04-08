@@ -3,7 +3,6 @@ name = "reddit-data"
 version = "0.1.0"
 requires-python = ">=3.11"
 dependencies = [
-    "libtorrent",
     "orjson",
     "zstandard",
     "pandas",
@@ -11,6 +10,9 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+torrent = [
+    "libtorrent",
+]
 hf = [
     "duckdb",
     "huggingface-hub",
