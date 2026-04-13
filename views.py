@@ -105,13 +105,21 @@ def write_describe_summary_csv(result: DescribeResult, filename: str) -> Path:
     return out
 
 
-def write_describe_monthly_csv(result: DescribeResult, filename: str) -> Path:
-    """Write a subreddit × month pivot table to CSV."""
+def write_describe_monthly_csv(
+    result: DescribeResult,
+    filename: str,
+    top_n: int | None = None,
+) -> Path:
+    """Write a subreddit × month pivot table to CSV.
+
+    When ``top_n`` is given, only the top subreddits by total volume are kept.
+    The aggregated ``ALL`` row is always included.
+    """
     TABLES_DIR.mkdir(parents=True, exist_ok=True)
     out = TABLES_DIR / filename
 
     months = result.sorted_months()
-    subreddits = result.sorted_subreddits()
+    subreddits = _select_subreddits(result, top_n)
 
     with out.open("w", newline="", encoding="utf-8") as f:
         writer = csv.writer(f)
@@ -166,23 +174,27 @@ def plot_describe_trend_aggregated(result: DescribeResult, filename: str) -> Pat
 def plot_describe_trend_per_subreddit(
     result: DescribeResult,
     filename: str,
-    top_n: int = 15,
+    top_n: int | None = 15,
 ) -> Path:
-    """Line chart of monthly posts for the top *top_n* subreddits."""
+    """Line chart of monthly posts for all or the top *top_n* subreddits."""
     FIGURES_DIR.mkdir(parents=True, exist_ok=True)
     out = FIGURES_DIR / filename
 
     months = result.sorted_months()
-    top_subs = [sub for sub, _ in result.subreddit_counts.most_common(top_n)]
+    selected_subs = _select_subreddits(result, top_n)
 
     fig, ax = plt.subplots(figsize=(14, 7))
-    for sub in top_subs:
+    for sub in selected_subs:
         counts = [result.subreddit_monthly_counts.get((sub, m), 0) for m in months]
         ax.plot(months, counts, marker=".", linewidth=1.0, label=sub)
 
     ax.set_xlabel("Month")
     ax.set_ylabel("Number of posts")
-    ax.set_title(f"Monthly post volume — {result.kind} (top {top_n} subreddits)")
+    if top_n is None:
+        title_suffix = "all subreddits"
+    else:
+        title_suffix = f"top {top_n} subreddits"
+    ax.set_title(f"Monthly post volume — {result.kind} ({title_suffix})")
     ax.yaxis.set_major_formatter(ticker.FuncFormatter(lambda x, _: f"{int(x):,}"))
     ax.legend(fontsize="small", loc="upper left", bbox_to_anchor=(1.01, 1.0))
     _thin_xticks(ax, months)
@@ -192,6 +204,13 @@ def plot_describe_trend_per_subreddit(
 
     log.info("Wrote %s", out)
     return out
+
+
+def _select_subreddits(result: DescribeResult, top_n: int | None) -> list[str]:
+    """Return subreddit names for full or top-*n* outputs."""
+    if top_n is None:
+        return result.sorted_subreddits()
+    return [sub for sub, _ in result.subreddit_counts.most_common(top_n)]
 
 
 def _thin_xticks(ax: plt.Axes, labels: list[str], max_ticks: int = 18) -> None:

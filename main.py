@@ -171,7 +171,9 @@ def cmd_describe() -> int:
             continue
         write_describe_summary_csv(result, f"describe-{kind}-summary.csv")
         write_describe_monthly_csv(result, f"describe-{kind}-monthly.csv")
+        write_describe_monthly_csv(result, f"describe-{kind}-monthly-top15.csv", top_n=15)
         plot_describe_trend_aggregated(result, f"describe-{kind}-trend-aggregated.svg")
+        plot_describe_trend_per_subreddit(result, f"describe-{kind}-trend-all.svg", top_n=None)
         plot_describe_trend_per_subreddit(result, f"describe-{kind}-trend-top15.svg")
     return 0
 

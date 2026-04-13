@@ -164,6 +164,25 @@ def test_write_describe_monthly_csv(tmp_path: Path, monkeypatch: pytest.MonkeyPa
     assert len(lines) == 5
 
 
+def test_write_describe_monthly_csv_top_n(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from views import write_describe_monthly_csv
+
+    monkeypatch.setattr("src.config.TABLES_DIR", tmp_path)
+    zst_path = _make_filtered_zst(tmp_path)
+    result = describe_filtered("comments", input_paths=[zst_path])
+
+    out = write_describe_monthly_csv(result, "test-monthly-top2.csv", top_n=2)
+    assert out.exists()
+    lines = out.read_text(encoding="utf-8").strip().split("\n")
+    assert len(lines) == 4
+    assert lines[1].startswith("askreddit,")
+    assert lines[2].startswith("science,")
+    assert lines[3].startswith("ALL,")
+
+
 def test_plot_describe_trend_aggregated(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     from views import plot_describe_trend_aggregated
 
@@ -184,5 +203,20 @@ def test_plot_describe_trend_per_subreddit(tmp_path: Path, monkeypatch: pytest.M
     result = describe_filtered("comments", input_paths=[zst_path])
 
     out = plot_describe_trend_per_subreddit(result, "test-per-sub.svg", top_n=3)
+    assert out.exists()
+    assert out.stat().st_size > 0
+
+
+def test_plot_describe_trend_all_subreddits(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from views import plot_describe_trend_per_subreddit
+
+    monkeypatch.setattr("src.config.FIGURES_DIR", tmp_path)
+    zst_path = _make_filtered_zst(tmp_path)
+    result = describe_filtered("comments", input_paths=[zst_path])
+
+    out = plot_describe_trend_per_subreddit(result, "test-per-sub-all.svg", top_n=None)
     assert out.exists()
     assert out.stat().st_size > 0
