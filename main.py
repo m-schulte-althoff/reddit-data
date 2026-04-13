@@ -18,6 +18,7 @@ Commands:
     verify      Check that all raw files are present and valid.
     filter      Filter raw data to the configured time window.
     analyse     Compute descriptive statistics for comments and submissions.
+    describe    Descriptive overview of filtered data (trends, per-subreddit).
     sample      Reservoir-sample records and write CSV + optional DataFrame.
     hf-extract  Extract data via Hugging Face (alternative source).
     hf-list     List months available on Hugging Face.
@@ -153,6 +154,28 @@ def cmd_analyse() -> int:
     return 0
 
 
+def cmd_describe() -> int:
+    """Descriptive overview of filtered data: counts, trends, per-subreddit stats."""
+    from src.describe import describe_filtered
+    from views import (
+        plot_describe_trend_aggregated,
+        plot_describe_trend_per_subreddit,
+        write_describe_monthly_csv,
+        write_describe_summary_csv,
+    )
+
+    for kind in ("comments", "submissions"):
+        result = describe_filtered(kind)
+        if result.total_records == 0:
+            logging.getLogger(__name__).warning("No data for %s — skipping.", kind)
+            continue
+        write_describe_summary_csv(result, f"describe-{kind}-summary.csv")
+        write_describe_monthly_csv(result, f"describe-{kind}-monthly.csv")
+        plot_describe_trend_aggregated(result, f"describe-{kind}-trend-aggregated.svg")
+        plot_describe_trend_per_subreddit(result, f"describe-{kind}-trend-top15.svg")
+    return 0
+
+
 def cmd_sample() -> int:
     from src.analysis import sample
     from views import write_sample_csv
@@ -183,6 +206,7 @@ COMMANDS: dict[str, tuple[callable, str]] = {  # type: ignore[type-arg]
     "filter": (cmd_filter, "Filter raw data to configured time window"),
     "filter-subreddit": (cmd_filter_subreddit, "Filter by subreddit list (Chan-2025)"),
     "analyse": (cmd_analyse, "Descriptive statistics for raw data"),
+    "describe": (cmd_describe, "Descriptive overview of filtered data"),
     "sample": (cmd_sample, "Reservoir-sample records to CSV"),
     "hf-extract": (cmd_hf_extract, "Extract data via Hugging Face"),
     "hf-list": (cmd_hf_list, "List months available on Hugging Face"),

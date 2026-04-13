@@ -7,6 +7,7 @@ dependencies = [
     "zstandard",
     "pandas",
     "pyarrow",
+    "matplotlib",
 ]
 
 [project.optional-dependencies]
