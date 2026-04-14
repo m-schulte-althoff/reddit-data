@@ -220,3 +220,30 @@ def test_plot_describe_trend_all_subreddits(
     out = plot_describe_trend_per_subreddit(result, "test-per-sub-all.svg", top_n=None)
     assert out.exists()
     assert out.stat().st_size > 0
+
+
+def test_plot_describe_trend_caps_many_subreddits(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """When subreddit count exceeds _MAX_TREND_LINES, the plot is capped."""
+    from views import plot_describe_trend_per_subreddit, _MAX_TREND_LINES
+
+    monkeypatch.setattr("src.config.FIGURES_DIR", tmp_path)
+
+    # Build a DescribeResult with more subreddits than the cap.
+    result = DescribeResult(kind="comments")
+    n_subs = _MAX_TREND_LINES + 20
+    for i in range(n_subs):
+        sub = f"sub_{i:04d}"
+        result.subreddit_counts[sub] = n_subs - i  # descending rank
+        result.monthly_counts["2022-06"] += 1
+        result.subreddit_monthly_counts[(sub, "2022-06")] = n_subs - i
+    result.total_records = sum(result.subreddit_counts.values())
+    result.min_ts = 1654100000
+    result.max_ts = 1654100000
+
+    out = plot_describe_trend_per_subreddit(result, "test-capped.svg", top_n=None)
+    assert out.exists()
+    # SVG file should be reasonably small (not bloated).
+    assert out.stat().st_size < 500_000

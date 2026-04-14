@@ -5,15 +5,20 @@ from __future__ import annotations
 import csv
 import json
 import logging
+from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
 
 import matplotlib
 matplotlib.use("Agg")  # non-interactive backend
+import matplotlib.dates as mdates
 import matplotlib.pyplot as plt
 import matplotlib.ticker as ticker
 
 from src.config import FIGURES_DIR, TABLES_DIR
+
+# Maximum subreddits shown in a single line chart before it becomes unreadable.
+_MAX_TREND_LINES: int = 50
 
 if TYPE_CHECKING:
     from src.describe import DescribeResult
@@ -153,16 +158,16 @@ def plot_describe_trend_aggregated(result: DescribeResult, filename: str) -> Pat
     out = FIGURES_DIR / filename
 
     months = result.sorted_months()
+    dates = _month_strings_to_dates(months)
     counts = [result.monthly_counts[m] for m in months]
 
     fig, ax = plt.subplots(figsize=(12, 5))
-    ax.plot(months, counts, marker="o", linewidth=1.5)
+    ax.plot(dates, counts, marker="o", linewidth=1.5)
     ax.set_xlabel("Month")
     ax.set_ylabel("Number of posts")
     ax.set_title(f"Monthly post volume — {result.kind} (all subreddits)")
     ax.yaxis.set_major_formatter(ticker.FuncFormatter(lambda x, _: f"{int(x):,}"))
-    # Rotate x-labels for readability.
-    _thin_xticks(ax, months)
+    _format_date_axis(ax, dates)
     fig.tight_layout()
     fig.savefig(out)
     plt.close(fig)
@@ -176,28 +181,56 @@ def plot_describe_trend_per_subreddit(
     filename: str,
     top_n: int | None = 15,
 ) -> Path:
-    """Line chart of monthly posts for all or the top *top_n* subreddits."""
+    """Line chart of monthly posts for all or the top *top_n* subreddits.
+
+    When *top_n* is ``None`` all subreddits are included, but the plot is
+    capped at ``_MAX_TREND_LINES`` for readability (full data is in the CSV).
+    """
     FIGURES_DIR.mkdir(parents=True, exist_ok=True)
     out = FIGURES_DIR / filename
 
     months = result.sorted_months()
+    dates = _month_strings_to_dates(months)
     selected_subs = _select_subreddits(result, top_n)
+
+    # Cap to a displayable number of lines.
+    capped = False
+    if len(selected_subs) > _MAX_TREND_LINES:
+        log.warning(
+            "Capping trend plot to top %d of %d subreddits (full data in CSV)",
+            _MAX_TREND_LINES,
+            len(selected_subs),
+        )
+        selected_subs = [
+            sub for sub, _ in result.subreddit_counts.most_common(_MAX_TREND_LINES)
+        ]
+        capped = True
+
+    use_markers = len(selected_subs) <= 15
 
     fig, ax = plt.subplots(figsize=(14, 7))
     for sub in selected_subs:
         counts = [result.subreddit_monthly_counts.get((sub, m), 0) for m in months]
-        ax.plot(months, counts, marker=".", linewidth=1.0, label=sub)
+        ax.plot(
+            dates,
+            counts,
+            marker="." if use_markers else None,
+            linewidth=1.0,
+            label=sub,
+        )
 
     ax.set_xlabel("Month")
     ax.set_ylabel("Number of posts")
-    if top_n is None:
+    if top_n is None and not capped:
         title_suffix = "all subreddits"
+    elif capped:
+        title_suffix = f"top {_MAX_TREND_LINES} of {len(result.subreddit_counts)} subreddits"
     else:
         title_suffix = f"top {top_n} subreddits"
     ax.set_title(f"Monthly post volume — {result.kind} ({title_suffix})")
     ax.yaxis.set_major_formatter(ticker.FuncFormatter(lambda x, _: f"{int(x):,}"))
-    ax.legend(fontsize="small", loc="upper left", bbox_to_anchor=(1.01, 1.0))
-    _thin_xticks(ax, months)
+    ax.legend(fontsize="x-small", loc="upper left", bbox_to_anchor=(1.01, 1.0))
+    _format_date_axis(ax, dates)
     fig.tight_layout()
     fig.savefig(out)
     plt.close(fig)
@@ -207,20 +240,19 @@ def plot_describe_trend_per_subreddit(
 
 
 def _select_subreddits(result: DescribeResult, top_n: int | None) -> list[str]:
-    """Return subreddit names for full or top-*n* outputs."""
+    """Return subreddit names ordered by total post count (descending)."""
     if top_n is None:
-        return result.sorted_subreddits()
+        return [sub for sub, _ in result.subreddit_counts.most_common()]
     return [sub for sub, _ in result.subreddit_counts.most_common(top_n)]
 
 
-def _thin_xticks(ax: plt.Axes, labels: list[str], max_ticks: int = 18) -> None:
-    """Show at most *max_ticks* evenly spaced x-tick labels."""
-    n = len(labels)
-    if n <= max_ticks:
-        ax.set_xticks(range(n))
-        ax.set_xticklabels(labels, rotation=45, ha="right", fontsize=8)
-    else:
-        step = max(1, n // max_ticks)
-        positions = list(range(0, n, step))
-        ax.set_xticks(positions)
-        ax.set_xticklabels([labels[i] for i in positions], rotation=45, ha="right", fontsize=8)
+def _month_strings_to_dates(months: list[str]) -> list[datetime]:
+    """Convert ``YYYY-MM`` strings to ``datetime`` objects for proper axis scaling."""
+    return [datetime.strptime(m, "%Y-%m") for m in months]
+
+
+def _format_date_axis(ax: plt.Axes, dates: list[datetime]) -> None:
+    """Configure the x-axis as a date axis with readable tick spacing."""
+    ax.xaxis.set_major_locator(mdates.AutoDateLocator())
+    ax.xaxis.set_major_formatter(mdates.DateFormatter("%Y-%m"))
+    ax.figure.autofmt_xdate(rotation=45, ha="right")
