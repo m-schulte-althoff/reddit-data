@@ -23,6 +23,7 @@ _MAX_TREND_LINES: int = 50
 if TYPE_CHECKING:
     from src.describe import DescribeResult
     from src.discursivity import DepthBucket, DiscursivityResult
+    from src.resilience import ResilienceResult
 
 log = logging.getLogger(__name__)
 
@@ -460,3 +461,240 @@ def _sub_label(top_n: int | None, total: int) -> str:
             return f"top {shown} of {total} subreddits"
         return "all subreddits"
     return f"top {top_n} subreddits"
+
+
+# ── Resilience views ─────────────────────────────────────────────────────────
+
+
+def write_resilience_profiles_csv(result: ResilienceResult, filename: str) -> Path:
+    """Write per-subreddit pre/post profiles to CSV."""
+    TABLES_DIR.mkdir(parents=True, exist_ok=True)
+    out = TABLES_DIR / filename
+
+    fieldnames = [
+        "subreddit",
+        "pre_mean_comments",
+        "post_mean_comments",
+        "activity_change_pct",
+        "pre_threading_ratio",
+        "pre_mean_depth",
+        "pre_months",
+        "post_months",
+    ]
+
+    with out.open("w", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(f, fieldnames=fieldnames)
+        writer.writeheader()
+        for p in result.profiles:
+            writer.writerow({
+                "subreddit": p.subreddit,
+                "pre_mean_comments": round(p.pre_mean_comments, 2),
+                "post_mean_comments": round(p.post_mean_comments, 2),
+                "activity_change_pct": round(p.activity_change_pct, 2),
+                "pre_threading_ratio": round(p.pre_threading_ratio, 4),
+                "pre_mean_depth": round(p.pre_mean_depth, 4),
+                "pre_months": p.pre_months,
+                "post_months": p.post_months,
+            })
+
+    log.info("Wrote %s", out)
+    return out
+
+
+def write_resilience_stats_csv(result: ResilienceResult, filename: str) -> Path:
+    """Write statistical test results to a key-value CSV."""
+    TABLES_DIR.mkdir(parents=True, exist_ok=True)
+    out = TABLES_DIR / filename
+
+    rows: list[tuple[str, str]] = [
+        ("genai_cutoff", result.genai_cutoff),
+        ("n_subreddits", str(len(result.profiles))),
+    ]
+
+    for label, corr in [
+        ("threading_ratio", result.corr_threading),
+        ("mean_depth", result.corr_depth),
+    ]:
+        if corr:
+            rows.append((f"spearman_{label}_rho", f"{corr.rho:.4f}"))
+            rows.append((f"spearman_{label}_p", f"{corr.p_value:.6f}"))
+            rows.append((f"spearman_{label}_n", str(corr.n)))
+
+    for label, reg in [
+        ("threading_ratio", result.reg_threading),
+        ("mean_depth", result.reg_depth),
+    ]:
+        if reg:
+            rows.append((f"ols_{label}_slope", f"{reg.slope:.4f}"))
+            rows.append((f"ols_{label}_intercept", f"{reg.intercept:.4f}"))
+            rows.append((f"ols_{label}_r_squared", f"{reg.r_squared:.4f}"))
+            rows.append((f"ols_{label}_p", f"{reg.p_value:.6f}"))
+
+    for label, grp in [
+        ("threading_ratio", result.group_threading),
+        ("mean_depth", result.group_depth),
+    ]:
+        if grp:
+            rows.append((f"mw_{label}_high_n", str(grp.high_n)))
+            rows.append((f"mw_{label}_low_n", str(grp.low_n)))
+            rows.append((f"mw_{label}_high_median_change", f"{grp.high_median_change:.2f}"))
+            rows.append((f"mw_{label}_low_median_change", f"{grp.low_median_change:.2f}"))
+            rows.append((f"mw_{label}_U", f"{grp.u_statistic:.0f}"))
+            rows.append((f"mw_{label}_p", f"{grp.p_value:.6f}"))
+
+    with out.open("w", newline="", encoding="utf-8") as f:
+        writer = csv.writer(f)
+        writer.writerow(["metric", "value"])
+        writer.writerows(rows)
+
+    log.info("Wrote %s", out)
+    return out
+
+
+def plot_resilience_scatter(
+    result: ResilienceResult,
+    filename: str,
+    variable: str = "threading_ratio",
+) -> Path:
+    """Scatter plot of pre-period engagement vs. post-GenAI activity change.
+
+    Includes an OLS regression line and a text box with Spearman rho,
+    OLS R², and p-values.
+    """
+    FIGURES_DIR.mkdir(parents=True, exist_ok=True)
+    out = FIGURES_DIR / filename
+
+    if variable == "threading_ratio":
+        x = [p.pre_threading_ratio for p in result.profiles]
+        xlabel = "Pre-GenAI threading ratio"
+        corr = result.corr_threading
+        reg = result.reg_threading
+    else:
+        x = [p.pre_mean_depth for p in result.profiles]
+        xlabel = "Pre-GenAI mean comment depth"
+        corr = result.corr_depth
+        reg = result.reg_depth
+
+    y = [p.activity_change_pct for p in result.profiles]
+
+    fig, ax = plt.subplots(figsize=(10, 7))
+    ax.scatter(x, y, alpha=0.6, s=30, edgecolors="k", linewidths=0.5)
+
+    # OLS fit line.
+    if reg and len(x) >= 2:
+        x_min, x_max = min(x), max(x)
+        margin = (x_max - x_min) * 0.02 or 0.01
+        x_line = [x_min - margin + (x_max - x_min + 2 * margin) * i / 99 for i in range(100)]
+        y_line = [reg.slope * xi + reg.intercept for xi in x_line]
+        ax.plot(x_line, y_line, color="red", linewidth=1.5, linestyle="--", label="OLS fit")
+
+    ax.axhline(0, color="gray", linewidth=0.8, linestyle=":")
+
+    if corr and reg:
+        text = (
+            f"Spearman \u03c1 = {corr.rho:.3f} (p = {corr.p_value:.4f})\n"
+            f"OLS R\u00b2 = {reg.r_squared:.3f}, slope = {reg.slope:.1f}\n"
+            f"n = {corr.n} subreddits"
+        )
+        ax.text(
+            0.02, 0.98, text, transform=ax.transAxes,
+            fontsize=9, verticalalignment="top",
+            bbox={"boxstyle": "round", "facecolor": "wheat", "alpha": 0.8},
+        )
+
+    ax.set_xlabel(xlabel)
+    ax.set_ylabel("Activity change (%)")
+    ax.set_title(f"Pre-GenAI {variable.replace('_', ' ')} vs. post-GenAI activity change")
+    if reg:
+        ax.legend()
+    fig.tight_layout()
+    fig.savefig(out)
+    plt.close(fig)
+
+    log.info("Wrote %s", out)
+    return out
+
+
+def plot_resilience_boxplot(result: ResilienceResult, filename: str) -> Path:
+    """Side-by-side box plots: activity change for high vs. low engagement groups."""
+    import statistics as _stats  # needed for median split in view
+
+    FIGURES_DIR.mkdir(parents=True, exist_ok=True)
+    out = FIGURES_DIR / filename
+
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 6), sharey=True)
+
+    for ax, variable, label, grp in [
+        (ax1, "threading_ratio", "Threading ratio", result.group_threading),
+        (ax2, "mean_depth", "Mean depth", result.group_depth),
+    ]:
+        if variable == "threading_ratio":
+            vals = [p.pre_threading_ratio for p in result.profiles]
+        else:
+            vals = [p.pre_mean_depth for p in result.profiles]
+
+        med = _stats.median(vals)
+        high = [p.activity_change_pct for p, v in zip(result.profiles, vals) if v >= med]
+        low = [p.activity_change_pct for p, v in zip(result.profiles, vals) if v < med]
+
+        bp = ax.boxplot(
+            [low, high],
+            tick_labels=[f"Low {label}\n(n={len(low)})", f"High {label}\n(n={len(high)})"],
+            patch_artist=True,
+        )
+        bp["boxes"][0].set_facecolor("#bdd7ee")
+        bp["boxes"][1].set_facecolor("#f8cbad")
+        ax.axhline(0, color="gray", linewidth=0.8, linestyle=":")
+        ax.set_ylabel("Activity change (%)")
+
+        if grp:
+            text = f"MW U = {grp.u_statistic:.0f}\np = {grp.p_value:.4f}"
+            ax.text(
+                0.98, 0.98, text, transform=ax.transAxes,
+                fontsize=9, verticalalignment="top", horizontalalignment="right",
+                bbox={"boxstyle": "round", "facecolor": "lightyellow", "alpha": 0.8},
+            )
+
+    fig.suptitle("Post-GenAI activity change by pre-GenAI engagement level")
+    fig.tight_layout()
+    fig.savefig(out)
+    plt.close(fig)
+
+    log.info("Wrote %s", out)
+    return out
+
+
+def plot_resilience_indexed_trend(result: ResilienceResult, filename: str) -> Path:
+    """Indexed activity over time (pre-period mean = 100) for high/low groups."""
+    FIGURES_DIR.mkdir(parents=True, exist_ok=True)
+    out = FIGURES_DIR / filename
+
+    months = result.months
+    dates = _month_strings_to_dates(months)
+    high_vals = [result.indexed_high.get(m, 0.0) for m in months]
+    low_vals = [result.indexed_low.get(m, 0.0) for m in months]
+
+    fig, ax = plt.subplots(figsize=(14, 7))
+    ax.plot(dates, high_vals, marker=".", linewidth=1.5, label="High threading (above median)")
+    ax.plot(dates, low_vals, marker=".", linewidth=1.5, label="Low threading (below median)")
+
+    # GenAI cutoff vertical line.
+    cutoff_date = datetime.strptime(result.genai_cutoff, "%Y-%m")
+    ax.axvline(
+        cutoff_date, color="red", linewidth=1.5, linestyle="--",
+        alpha=0.7, label="ChatGPT launch",
+    )
+
+    ax.axhline(100, color="gray", linewidth=0.8, linestyle=":")
+
+    ax.set_xlabel("Month")
+    ax.set_ylabel("Indexed activity (pre-period mean = 100)")
+    ax.set_title("Indexed comment activity: high vs. low engagement subreddits")
+    ax.legend()
+    _format_date_axis(ax, dates)
+    fig.tight_layout()
+    fig.savefig(out)
+    plt.close(fig)
+
+    log.info("Wrote %s", out)
+    return out

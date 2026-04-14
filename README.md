@@ -26,10 +26,13 @@ uv run python3 main.py describe
 # 6. Comment-depth / discursivity analysis
 uv run python3 main.py discursivity
 
-# 7. Compute descriptive statistics on raw data
+# 7. Engagement vs. post-GenAI decline analysis
+uv run python3 main.py resilience
+
+# 8. Compute descriptive statistics on raw data
 uv run python3 main.py analyse
 
-# 8. Reservoir-sample 500 records per type to CSV
+# 9. Reservoir-sample 500 records per type to CSV
 uv run python3 main.py sample
 ```
 
@@ -65,6 +68,7 @@ Edit `src/config.py` to change:
 | `filter-subreddit` | Filter raw data by subreddit list (Chan-2025). Supports resume, time window, and month selection. |
 | `describe` | Descriptive overview of filtered data: post counts, monthly trends, per-subreddit breakdowns (CSV + SVG). |
 | `discursivity` | Comment-depth / threading metrics from filtered data: mean depth, threading ratio per subreddit per month (CSV + SVG). |
+| `resilience` | Engagement vs. post-GenAI decline: tests whether higher threading ratio / mean depth predicts less activity decline after ChatGPT launch. |
 | `analyse` | Compute descriptive stats on raw data (row counts, timestamp range, top subreddits/authors, score stats). |
 | `sample` | Reservoir-sample records and write to `output/tables/`. |
 | `hf-extract` | Extract filtered parquet from the Hugging Face mirror. |
@@ -81,6 +85,7 @@ Edit `src/config.py` to change:
 │   ├── filter.py            # Subreddit filtering with resume
 │   ├── describe.py          # Descriptive overview of filtered data
 │   ├── discursivity.py      # Comment-depth & threading analysis
+│   ├── resilience.py        # Engagement vs. post-GenAI decline analysis
 │   ├── hugging_face.py      # HF parquet extraction
 │   └── analysis.py          # Descriptive stats & sampling (raw data)
 ├── input/
@@ -107,6 +112,7 @@ uv run python3 main.py filter
 uv run python3 main.py filter-subreddit
 uv run python3 main.py describe
 uv run python3 main.py discursivity
+uv run python3 main.py resilience
 uv run python3 main.py analyse
 uv run python3 main.py sample
 ```
@@ -150,6 +156,45 @@ Outputs:
 | `output/figures/discursivity-mean-depth-all.svg` | Mean depth trend, all subreddits (capped at 50) |
 | `output/figures/discursivity-threading-ratio-top15.svg` | Threading ratio trend, top 15 subreddits |
 | `output/figures/discursivity-threading-ratio-all.svg` | Threading ratio trend, all subreddits (capped at 50) |
+
+### Resilience (engagement vs. post-GenAI decline)
+
+The `resilience` command tests whether subreddits with deeper, more threaded
+discussions experienced a smaller decline in monthly comment volume after the
+ChatGPT launch (November 2022). It computes discursivity metrics, splits the
+timeline at the GenAI cutoff, and runs both exploratory and rigorous analyses.
+
+**Methodology:**
+1. For each subreddit, compute pre-period (before 2022-11) and post-period
+   average monthly comment counts and engagement metrics (threading ratio,
+   mean comment depth) weighted by comment volume.
+2. Calculate the percentage change in activity: `(post_mean − pre_mean) / pre_mean × 100`.
+3. Subreddits with too few active months or too low activity are excluded
+   (configurable thresholds: `min_pre_months=3`, `min_post_months=3`,
+   `min_comments_per_month=10`).
+
+**Exploratory outputs:**
+- Scatter plots with OLS regression lines — one per engagement metric
+- Indexed activity trend (pre-period = 100) for high vs. low threading groups
+- Box plots comparing decline distributions by engagement level
+
+**Rigorous statistical tests:**
+- **Spearman rank correlation** (non-parametric) — tests monotonic association
+  between pre-period engagement and post-period decline
+- **OLS regression** (parametric) — quantifies the linear effect size
+- **Mann–Whitney U test** (non-parametric) — compares decline distributions
+  of above-median vs. below-median engagement groups
+
+Outputs:
+
+| File | Content |
+|---|---|
+| `output/tables/resilience-profiles.csv` | Per-subreddit profile: pre/post means, change %, pre-period threading ratio & depth |
+| `output/tables/resilience-statistics.csv` | Spearman ρ, OLS coefficients, Mann–Whitney U statistics with p-values |
+| `output/figures/resilience-scatter-threading.svg` | Scatter: pre-period threading ratio vs. activity change |
+| `output/figures/resilience-scatter-depth.svg` | Scatter: pre-period mean depth vs. activity change |
+| `output/figures/resilience-boxplot.svg` | Box plots: high vs. low engagement group decline (two panels) |
+| `output/figures/resilience-indexed-trend.svg` | Indexed activity over time (high vs. low threading, with GenAI cutoff) |
 
 ## Filter by subreddit
 

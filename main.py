@@ -200,6 +200,37 @@ def cmd_discursivity() -> int:
     return 0
 
 
+def cmd_resilience() -> int:
+    """Engagement-vs-decline analysis across the GenAI cutoff."""
+    from src.discursivity import compute_discursivity
+    from src.resilience import compute_resilience
+    from views import (
+        plot_resilience_boxplot,
+        plot_resilience_indexed_trend,
+        plot_resilience_scatter,
+        write_resilience_profiles_csv,
+        write_resilience_stats_csv,
+    )
+
+    disc = compute_discursivity()
+    if disc.resolved_comments == 0:
+        logging.getLogger(__name__).warning("No resolved comments — skipping.")
+        return 0
+
+    result = compute_resilience(disc)
+    if not result.profiles:
+        logging.getLogger(__name__).warning("No qualifying subreddits — skipping outputs.")
+        return 0
+
+    write_resilience_profiles_csv(result, "resilience-profiles.csv")
+    write_resilience_stats_csv(result, "resilience-statistics.csv")
+    plot_resilience_scatter(result, "resilience-scatter-threading.svg", variable="threading_ratio")
+    plot_resilience_scatter(result, "resilience-scatter-depth.svg", variable="mean_depth")
+    plot_resilience_boxplot(result, "resilience-boxplot.svg")
+    plot_resilience_indexed_trend(result, "resilience-indexed-trend.svg")
+    return 0
+
+
 def cmd_sample() -> int:
     from src.analysis import sample
     from views import write_sample_csv
@@ -232,6 +263,7 @@ COMMANDS: dict[str, tuple[callable, str]] = {  # type: ignore[type-arg]
     "analyse": (cmd_analyse, "Descriptive statistics for raw data"),
     "describe": (cmd_describe, "Descriptive overview of filtered data"),
     "discursivity": (cmd_discursivity, "Comment-depth / threading metrics"),
+    "resilience": (cmd_resilience, "Engagement vs. post-GenAI decline analysis"),
     "sample": (cmd_sample, "Reservoir-sample records to CSV"),
     "hf-extract": (cmd_hf_extract, "Extract data via Hugging Face"),
     "hf-list": (cmd_hf_list, "List months available on Hugging Face"),
