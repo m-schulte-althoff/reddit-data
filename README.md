@@ -17,10 +17,19 @@ uv run python3 main.py verify
 # 3. Filter raw data to the configured time window
 uv run python3 main.py filter
 
-# 4. Compute descriptive statistics
+# 4. Filter by subreddit list (Chan-2025)
+uv run python3 main.py filter-subreddit
+
+# 5. Descriptive overview of filtered data (counts, trends)
+uv run python3 main.py describe
+
+# 6. Comment-depth / discursivity analysis
+uv run python3 main.py discursivity
+
+# 7. Compute descriptive statistics on raw data
 uv run python3 main.py analyse
 
-# 5. Reservoir-sample 500 records per type to CSV
+# 8. Reservoir-sample 500 records per type to CSV
 uv run python3 main.py sample
 ```
 
@@ -54,7 +63,9 @@ Edit `src/config.py` to change:
 | `verify` | Check that all raw files exist, are non-empty, and have valid zstd headers. |
 | `filter` | Merge and filter raw files into `data/processed/` within the time window. |
 | `filter-subreddit` | Filter raw data by subreddit list (Chan-2025). Supports resume, time window, and month selection. |
-| `analyse` | Compute descriptive stats (row counts, timestamp range, top subreddits/authors, score stats). |
+| `describe` | Descriptive overview of filtered data: post counts, monthly trends, per-subreddit breakdowns (CSV + SVG). |
+| `discursivity` | Comment-depth / threading metrics from filtered data: mean depth, threading ratio per subreddit per month (CSV + SVG). |
+| `analyse` | Compute descriptive stats on raw data (row counts, timestamp range, top subreddits/authors, score stats). |
 | `sample` | Reservoir-sample records and write to `output/tables/`. |
 | `hf-extract` | Extract filtered parquet from the Hugging Face mirror. |
 | `hf-list` | List available months on the Hugging Face mirror. |
@@ -63,19 +74,23 @@ Edit `src/config.py` to change:
 
 ```
 ├── main.py                  # CLI controller
-├── views.py                 # Output formatting (CSV tables)
+├── views.py                 # Output formatting (CSV, SVG figures)
 ├── src/
 │   ├── config.py            # Shared configuration
 │   ├── arctic_shift.py      # Torrent download, filter, verify
 │   ├── filter.py            # Subreddit filtering with resume
+│   ├── describe.py          # Descriptive overview of filtered data
+│   ├── discursivity.py      # Comment-depth & threading analysis
 │   ├── hugging_face.py      # HF parquet extraction
-│   └── analysis.py          # Descriptive stats & sampling
+│   └── analysis.py          # Descriptive stats & sampling (raw data)
+├── input/
+│   └── subreddit-list-Chan-2025.txt
 ├── data/
 │   ├── raw/                 # Immutable raw .zst files (git-ignored)
 │   └── processed/           # Filtered output (git-ignored)
 ├── output/
-│   ├── tables/              # CSV summaries & samples
-│   └── figures/             # (reserved for future plots)
+│   ├── tables/              # CSV summaries & metrics
+│   └── figures/             # SVG trend plots
 ├── logs/                    # Timestamped run logs
 ├── tests/
 ├── INSTRUCTIONS.md          # Code-style guidelines
@@ -89,11 +104,52 @@ Edit `src/config.py` to change:
 uv run python3 main.py download
 uv run python3 main.py verify
 uv run python3 main.py filter
+uv run python3 main.py filter-subreddit
+uv run python3 main.py describe
+uv run python3 main.py discursivity
 uv run python3 main.py analyse
 uv run python3 main.py sample
 ```
 
 All outputs are deterministic (fixed random seed, stable sorting).
+
+### Describe (filtered data overview)
+
+The `describe` command streams the filtered `.zst` files in `data/processed/`
+and produces per-subreddit post counts and monthly trend graphs.
+
+Outputs (per kind — comments and submissions):
+
+| File | Content |
+|---|---|
+| `output/tables/describe-{kind}-summary.csv` | High-level stats + per-subreddit totals |
+| `output/tables/describe-{kind}-monthly.csv` | Subreddit × month pivot table (all subreddits) |
+| `output/tables/describe-{kind}-monthly-top15.csv` | Same, top 15 subreddits only |
+| `output/figures/describe-{kind}-trend-aggregated.svg` | Aggregated monthly post volume |
+| `output/figures/describe-{kind}-trend-all.svg` | Per-subreddit monthly trends (capped at 50 lines) |
+| `output/figures/describe-{kind}-trend-top15.svg` | Top 15 subreddits monthly trends |
+
+### Discursivity (comment depth & threading)
+
+The `discursivity` command measures how deeply threaded discussions are across
+subreddits. Each comment is assigned a depth (submission = 0, direct reply = 1,
+reply-to-reply = 2, etc.) by resolving `parent_id` chains. Metrics are
+aggregated per subreddit per month.
+
+Key metrics:
+- **Mean comment depth** — average depth of comments in a subreddit/month.
+- **Threading ratio** — share of comments at depth ≥ 2 (replies to other
+  comments, not directly to the submission).
+
+Outputs:
+
+| File | Content |
+|---|---|
+| `output/tables/discursivity-monthly.csv` | Long-format CSV: subreddit, month, comment/submission counts, mean depth, max depth, threading ratio, depth histogram |
+| `output/figures/discursivity-mean-depth-top15.svg` | Mean depth trend, top 15 subreddits |
+| `output/figures/discursivity-mean-depth-all.svg` | Mean depth trend, all subreddits (capped at 50) |
+| `output/figures/discursivity-threading-ratio-top15.svg` | Threading ratio trend, top 15 subreddits |
+| `output/figures/discursivity-threading-ratio-all.svg` | Threading ratio trend, all subreddits (capped at 50) |
 
 ## Filter by subreddit
 

@@ -14,14 +14,15 @@ Usage:
     uv run python3 main.py <command>
 
 Commands:
-    download    Download missing raw .zst files via Arctic Shift torrent.
-    verify      Check that all raw files are present and valid.
-    filter      Filter raw data to the configured time window.
-    analyse     Compute descriptive statistics for comments and submissions.
-    describe    Descriptive overview of filtered data (trends, per-subreddit).
-    sample      Reservoir-sample records and write CSV + optional DataFrame.
-    hf-extract  Extract data via Hugging Face (alternative source).
-    hf-list     List months available on Hugging Face.
+    download       Download missing raw .zst files via Arctic Shift torrent.
+    verify         Check that all raw files are present and valid.
+    filter         Filter raw data to the configured time window.
+    analyse        Compute descriptive statistics for comments and submissions.
+    describe       Descriptive overview of filtered data (trends, per-subreddit).
+    discursivity   Comment-depth / threading metrics from filtered data.
+    sample         Reservoir-sample records and write CSV + optional DataFrame.
+    hf-extract     Extract data via Hugging Face (alternative source).
+    hf-list        List months available on Hugging Face.
 """
 
 from __future__ import annotations
@@ -178,6 +179,27 @@ def cmd_describe() -> int:
     return 0
 
 
+def cmd_discursivity() -> int:
+    """Compute comment-depth / discursivity metrics from filtered data."""
+    from src.discursivity import compute_discursivity
+    from views import (
+        plot_discursivity_mean_depth,
+        plot_discursivity_threading_ratio,
+        write_discursivity_csv,
+    )
+
+    result = compute_discursivity()
+    if result.resolved_comments == 0:
+        logging.getLogger(__name__).warning("No resolved comments — skipping outputs.")
+        return 0
+    write_discursivity_csv(result, "discursivity-monthly.csv")
+    plot_discursivity_mean_depth(result, "discursivity-mean-depth-top15.svg")
+    plot_discursivity_mean_depth(result, "discursivity-mean-depth-all.svg", top_n=None)
+    plot_discursivity_threading_ratio(result, "discursivity-threading-ratio-top15.svg")
+    plot_discursivity_threading_ratio(result, "discursivity-threading-ratio-all.svg", top_n=None)
+    return 0
+
+
 def cmd_sample() -> int:
     from src.analysis import sample
     from views import write_sample_csv
@@ -209,6 +231,7 @@ COMMANDS: dict[str, tuple[callable, str]] = {  # type: ignore[type-arg]
     "filter-subreddit": (cmd_filter_subreddit, "Filter by subreddit list (Chan-2025)"),
     "analyse": (cmd_analyse, "Descriptive statistics for raw data"),
     "describe": (cmd_describe, "Descriptive overview of filtered data"),
+    "discursivity": (cmd_discursivity, "Comment-depth / threading metrics"),
     "sample": (cmd_sample, "Reservoir-sample records to CSV"),
     "hf-extract": (cmd_hf_extract, "Extract data via Hugging Face"),
     "hf-list": (cmd_hf_list, "List months available on Hugging Face"),
