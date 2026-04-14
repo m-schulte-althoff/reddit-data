@@ -23,6 +23,7 @@ _MAX_TREND_LINES: int = 50
 if TYPE_CHECKING:
     from src.describe import DescribeResult
     from src.discursivity import DepthBucket, DiscursivityResult
+    from src.helpers import HelpersAnalysis, HelpersResult
     from src.resilience import ResilienceResult
 
 log = logging.getLogger(__name__)
@@ -691,6 +692,288 @@ def plot_resilience_indexed_trend(result: ResilienceResult, filename: str) -> Pa
     ax.set_ylabel("Indexed activity (pre-period mean = 100)")
     ax.set_title("Indexed comment activity: high vs. low engagement subreddits")
     ax.legend()
+    _format_date_axis(ax, dates)
+    fig.tight_layout()
+    fig.savefig(out)
+    plt.close(fig)
+
+    log.info("Wrote %s", out)
+    return out
+
+
+# ── Helpers views ─────────────────────────────────────────────────────────────
+
+
+def write_helpers_monthly_csv(result: HelpersResult, filename: str) -> Path:
+    """Write per-subreddit per-month concentration metrics to long-format CSV."""
+    from src.helpers import classify_subreddit
+
+    TABLES_DIR.mkdir(parents=True, exist_ok=True)
+    out = TABLES_DIR / filename
+
+    fieldnames = [
+        "subreddit",
+        "community_type",
+        "month",
+        "total_comments",
+        "unique_authors",
+        "top1_share",
+        "top5_share",
+        "hhi",
+        "gini",
+        "pct1_share",
+        "pct9_share",
+        "pct90_share",
+    ]
+
+    months = result.sorted_months()
+    subreddits = result.sorted_subreddits()
+
+    with out.open("w", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(f, fieldnames=fieldnames)
+        writer.writeheader()
+        for sub in subreddits:
+            ctype = classify_subreddit(sub)
+            for m in months:
+                c = result.cells.get((sub, m))
+                if c is None:
+                    continue
+                writer.writerow({
+                    "subreddit": sub,
+                    "community_type": ctype,
+                    "month": m,
+                    "total_comments": c.total_comments,
+                    "unique_authors": c.unique_authors,
+                    "top1_share": round(c.top1_share, 6),
+                    "top5_share": round(c.top5_share, 6),
+                    "hhi": round(c.hhi, 6),
+                    "gini": round(c.gini, 4),
+                    "pct1_share": round(c.pct1_share, 6),
+                    "pct9_share": round(c.pct9_share, 6),
+                    "pct90_share": round(c.pct90_share, 6),
+                })
+
+    log.info("Wrote %s", out)
+    return out
+
+
+def write_helpers_type_summary_csv(
+    analysis: HelpersAnalysis,
+    filename: str,
+) -> Path:
+    """Write community-type level summary to CSV."""
+    TABLES_DIR.mkdir(parents=True, exist_ok=True)
+    out = TABLES_DIR / filename
+
+    fieldnames = [
+        "community_type",
+        "n_subreddits",
+        "mean_top1_share",
+        "mean_top5_share",
+        "mean_hhi",
+        "mean_gini",
+        "mean_pct1_share",
+        "mean_pct9_share",
+        "mean_pct90_share",
+    ]
+
+    with out.open("w", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(f, fieldnames=fieldnames)
+        writer.writeheader()
+        for s in analysis.type_summaries:
+            writer.writerow({
+                "community_type": s.community_type,
+                "n_subreddits": s.n_subreddits,
+                "mean_top1_share": round(s.mean_top1_share, 6),
+                "mean_top5_share": round(s.mean_top5_share, 6),
+                "mean_hhi": round(s.mean_hhi, 6),
+                "mean_gini": round(s.mean_gini, 4),
+                "mean_pct1_share": round(s.mean_pct1_share, 6),
+                "mean_pct9_share": round(s.mean_pct9_share, 6),
+                "mean_pct90_share": round(s.mean_pct90_share, 6),
+            })
+
+    log.info("Wrote %s", out)
+    return out
+
+
+def write_helpers_moderation_csv(
+    analysis: HelpersAnalysis,
+    filename: str,
+) -> Path:
+    """Write per-subreddit moderation (concentration vs. activity change)."""
+    TABLES_DIR.mkdir(parents=True, exist_ok=True)
+    out = TABLES_DIR / filename
+
+    fieldnames = [
+        "subreddit",
+        "community_type",
+        "mean_gini",
+        "mean_top1_share",
+        "mean_top5_share",
+        "mean_hhi",
+        "mean_pct1_share",
+        "total_comments_first_half",
+        "total_comments_second_half",
+        "activity_change_pct",
+    ]
+
+    with out.open("w", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(f, fieldnames=fieldnames)
+        writer.writeheader()
+        for r in analysis.moderation_rows:
+            writer.writerow({
+                "subreddit": r.subreddit,
+                "community_type": r.community_type,
+                "mean_gini": round(r.mean_gini, 4),
+                "mean_top1_share": round(r.mean_top1_share, 6),
+                "mean_top5_share": round(r.mean_top5_share, 6),
+                "mean_hhi": round(r.mean_hhi, 6),
+                "mean_pct1_share": round(r.mean_pct1_share, 6),
+                "total_comments_first_half": r.total_comments_first_half,
+                "total_comments_second_half": r.total_comments_second_half,
+                "activity_change_pct": round(r.activity_change_pct, 2),
+            })
+
+    log.info("Wrote %s", out)
+    return out
+
+
+def plot_helpers_type_comparison(
+    analysis: HelpersAnalysis,
+    filename: str,
+) -> Path:
+    """Grouped bar chart comparing concentration metrics by community type."""
+    FIGURES_DIR.mkdir(parents=True, exist_ok=True)
+    out = FIGURES_DIR / filename
+
+    import numpy as np
+
+    metrics = ["top1_share", "top5_share", "gini", "pct1_share"]
+    labels = ["Top-1 share", "Top-5 share", "Gini", "Top 1 % share"]
+
+    type_data: dict[str, list[float]] = {}
+    for s in analysis.type_summaries:
+        type_data[s.community_type] = [
+            s.mean_top1_share,
+            s.mean_top5_share,
+            s.mean_gini,
+            s.mean_pct1_share,
+        ]
+
+    fig, ax = plt.subplots(figsize=(10, 6))
+    x = np.arange(len(metrics))
+    width = 0.35
+    colors = {"general": "#5b9bd5", "health": "#ed7d31"}
+
+    for i, ctype in enumerate(("general", "health")):
+        vals = type_data.get(ctype, [0] * len(metrics))
+        ax.bar(x + i * width, vals, width, label=ctype.capitalize(), color=colors[ctype])
+
+    ax.set_xticks(x + width / 2)
+    ax.set_xticklabels(labels)
+    ax.set_ylabel("Mean value")
+    ax.set_title("Helper concentration: General vs. Health communities")
+    ax.legend()
+    fig.tight_layout()
+    fig.savefig(out)
+    plt.close(fig)
+
+    log.info("Wrote %s", out)
+    return out
+
+
+def plot_helpers_moderation_scatter(
+    analysis: HelpersAnalysis,
+    filename: str,
+    metric: str = "gini",
+) -> Path:
+    """Scatter: concentration metric vs. activity change, coloured by type."""
+    FIGURES_DIR.mkdir(parents=True, exist_ok=True)
+    out = FIGURES_DIR / filename
+
+    label_map = {
+        "gini": ("Mean Gini coefficient", "mean_gini"),
+        "top1_share": ("Mean top-1 share", "mean_top1_share"),
+        "top5_share": ("Mean top-5 share", "mean_top5_share"),
+        "hhi": ("Mean HHI", "mean_hhi"),
+        "pct1_share": ("Top 1 % user share", "mean_pct1_share"),
+    }
+    xlabel, attr = label_map.get(metric, ("Metric", metric))
+    colors = {"general": "#5b9bd5", "health": "#ed7d31"}
+
+    fig, ax = plt.subplots(figsize=(10, 7))
+
+    for ctype in ("general", "health"):
+        rows = [r for r in analysis.moderation_rows if r.community_type == ctype]
+        x = [getattr(r, attr) for r in rows]
+        y = [r.activity_change_pct for r in rows]
+        ax.scatter(
+            x, y,
+            label=ctype.capitalize(),
+            color=colors[ctype],
+            alpha=0.7,
+            s=40,
+            edgecolors="k",
+            linewidths=0.5,
+        )
+
+    ax.axhline(0, color="gray", linewidth=0.8, linestyle=":")
+    ax.set_xlabel(xlabel)
+    ax.set_ylabel("Activity change (%)")
+    ax.set_title(f"Helper concentration ({xlabel}) vs. activity change")
+    ax.legend()
+    fig.tight_layout()
+    fig.savefig(out)
+    plt.close(fig)
+
+    log.info("Wrote %s", out)
+    return out
+
+
+def plot_helpers_gini_trend(
+    result: HelpersResult,
+    filename: str,
+    top_n: int | None = 15,
+) -> Path:
+    """Line chart of monthly Gini coefficient for top subreddits."""
+    from src.helpers import classify_subreddit
+
+    FIGURES_DIR.mkdir(parents=True, exist_ok=True)
+    out = FIGURES_DIR / filename
+
+    months = result.sorted_months()
+    dates = _month_strings_to_dates(months)
+    subs = result.sorted_subreddits()
+    if top_n is not None:
+        subs = subs[:top_n]
+    else:
+        subs = subs[:_MAX_TREND_LINES]
+    use_markers = len(subs) <= 15
+
+    fig, ax = plt.subplots(figsize=(14, 7))
+    for sub in subs:
+        vals = [
+            result.cells[(sub, m)].gini
+            if (sub, m) in result.cells
+            else 0.0
+            for m in months
+        ]
+        ctype = classify_subreddit(sub)
+        ls = "--" if ctype == "general" else "-"
+        ax.plot(
+            dates,
+            vals,
+            marker="." if use_markers else None,
+            linewidth=1.0,
+            linestyle=ls,
+            label=f"{sub} ({ctype[0].upper()})",
+        )
+
+    ax.set_xlabel("Month")
+    ax.set_ylabel("Gini coefficient")
+    ax.set_title("Helper concentration (Gini) over time")
+    ax.legend(fontsize="x-small", loc="upper left", bbox_to_anchor=(1.01, 1.0))
     _format_date_axis(ax, dates)
     fig.tight_layout()
     fig.savefig(out)

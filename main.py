@@ -20,6 +20,8 @@ Commands:
     analyse        Compute descriptive statistics for comments and submissions.
     describe       Descriptive overview of filtered data (trends, per-subreddit).
     discursivity   Comment-depth / threading metrics from filtered data.
+    resilience     Engagement vs. post-GenAI decline analysis.
+    helpers        Repeat-helper concentration analysis.
     sample         Reservoir-sample records and write CSV + optional DataFrame.
     hf-extract     Extract data via Hugging Face (alternative source).
     hf-list        List months available on Hugging Face.
@@ -281,6 +283,34 @@ def cmd_hf_list() -> int:
     return 0
 
 
+def cmd_helpers() -> int:
+    from src.helpers import _discover_filtered_paths, analyse_helpers, compute_helpers
+    from views import (
+        plot_helpers_gini_trend,
+        plot_helpers_moderation_scatter,
+        plot_helpers_type_comparison,
+        write_helpers_moderation_csv,
+        write_helpers_monthly_csv,
+        write_helpers_type_summary_csv,
+    )
+
+    result = compute_helpers(_discover_filtered_paths("comments"))
+    if not result.cells:
+        logging.getLogger(__name__).warning("No helper data — skipping.")
+        return 0
+
+    write_helpers_monthly_csv(result, "helpers-monthly.csv")
+
+    analysis = analyse_helpers(result)
+    write_helpers_type_summary_csv(analysis, "helpers-type-summary.csv")
+    write_helpers_moderation_csv(analysis, "helpers-moderation.csv")
+    plot_helpers_type_comparison(analysis, "helpers-type-comparison.svg")
+    plot_helpers_moderation_scatter(analysis, "helpers-moderation-gini.svg", metric="gini")
+    plot_helpers_moderation_scatter(analysis, "helpers-moderation-top5.svg", metric="top5_share")
+    plot_helpers_gini_trend(result, "helpers-gini-trend.svg")
+    return 0
+
+
 COMMANDS: dict[str, tuple[callable, str]] = {  # type: ignore[type-arg]
     "download": (cmd_download, "Download missing raw .zst files via torrent"),
     "verify": (cmd_verify, "Check raw files are present and valid"),
@@ -290,6 +320,7 @@ COMMANDS: dict[str, tuple[callable, str]] = {  # type: ignore[type-arg]
     "describe": (cmd_describe, "Descriptive overview of filtered data"),
     "discursivity": (cmd_discursivity, "Comment-depth / threading metrics"),
     "resilience": (cmd_resilience, "Engagement vs. post-GenAI decline analysis"),
+    "helpers": (cmd_helpers, "Repeat-helper concentration analysis"),
     "sample": (cmd_sample, "Reservoir-sample records to CSV"),
     "hf-extract": (cmd_hf_extract, "Extract data via Hugging Face"),
     "hf-list": (cmd_hf_list, "List months available on Hugging Face"),

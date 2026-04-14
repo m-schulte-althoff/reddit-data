@@ -29,10 +29,13 @@ uv run python3 main.py discursivity
 # 7. Engagement vs. post-GenAI decline analysis
 uv run python3 main.py resilience
 
-# 8. Compute descriptive statistics on raw data
+# 8. Repeat-helper concentration analysis
+uv run python3 main.py helpers
+
+# 9. Compute descriptive statistics on raw data
 uv run python3 main.py analyse
 
-# 9. Reservoir-sample 500 records per type to CSV
+# 10. Reservoir-sample 500 records per type to CSV
 uv run python3 main.py sample
 ```
 
@@ -69,6 +72,7 @@ Edit `src/config.py` to change:
 | `describe` | Descriptive overview of filtered data: post counts, monthly trends, per-subreddit breakdowns (CSV + SVG). |
 | `discursivity` | Comment-depth / threading metrics from filtered data: mean depth, threading ratio per subreddit per month (CSV + SVG). |
 | `resilience` | Engagement vs. post-GenAI decline: tests whether higher threading ratio / mean depth predicts less activity decline after ChatGPT launch. |
+| `helpers` | Repeat-helper concentration: 1/9/90 shares, Top-1/5 share, HHI, Gini per subreddit per month; community-type comparison (general vs. health); moderation analysis. |
 | `analyse` | Compute descriptive stats on raw data (row counts, timestamp range, top subreddits/authors, score stats). |
 | `sample` | Reservoir-sample records and write to `output/tables/`. |
 | `hf-extract` | Extract filtered parquet from the Hugging Face mirror. |
@@ -86,6 +90,7 @@ Edit `src/config.py` to change:
 │   ├── describe.py          # Descriptive overview of filtered data
 │   ├── discursivity.py      # Comment-depth & threading analysis
 │   ├── resilience.py        # Engagement vs. post-GenAI decline analysis
+│   ├── helpers.py           # Repeat-helper concentration analysis
 │   ├── hugging_face.py      # HF parquet extraction
 │   └── analysis.py          # Descriptive stats & sampling (raw data)
 ├── input/
@@ -113,6 +118,7 @@ uv run python3 main.py filter-subreddit
 uv run python3 main.py describe
 uv run python3 main.py discursivity
 uv run python3 main.py resilience
+uv run python3 main.py helpers
 uv run python3 main.py analyse
 uv run python3 main.py sample
 ```
