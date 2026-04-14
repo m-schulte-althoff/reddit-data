@@ -157,6 +157,13 @@ Outputs:
 | `output/figures/discursivity-threading-ratio-top15.svg` | Threading ratio trend, top 15 subreddits |
 | `output/figures/discursivity-threading-ratio-all.svg` | Threading ratio trend, all subreddits (capped at 50) |
 
+The `discursivity` command also saves a **cache file**
+(`output/tables/discursivity-cache.json`) that records the full result together
+with SHA-256 fingerprints (filename, size, mtime) of the input `.zst` files.
+Downstream commands like `resilience` load this cache automatically instead of
+re-scanning the data — the cache is only reused when the input files are
+unchanged; any modification triggers a recomputation.
+
 ### Resilience (engagement vs. post-GenAI decline)
 
 The `resilience` command tests whether subreddits with deeper, more threaded

@@ -13,6 +13,8 @@ from src.discursivity import (
     _cascade_resolve,
     _PendingComment,
     compute_discursivity,
+    load_discursivity,
+    save_discursivity,
 )
 
 
@@ -317,3 +319,79 @@ def test_compute_discursivity_integer_ids(tmp_path: Path) -> None:
     assert result.total_comments == 2
     # First comment has t3_ parent → depth 1 → resolved
     assert result.resolved_comments >= 1
+
+
+# ── Serialization / cache tests ──────────────────────────────────────────────
+
+
+def test_depth_bucket_round_trip() -> None:
+    b = DepthBucket()
+    b.add(1)
+    b.add(2)
+    b.add(3)
+    b.add(3)
+    d = b.to_dict()
+    b2 = DepthBucket.from_dict(d)
+    assert b2.count == b.count
+    assert b2.depth_sum == b.depth_sum
+    assert b2.max_depth == b.max_depth
+    assert b2.depth_histogram == b.depth_histogram
+
+
+def test_discursivity_result_round_trip(tmp_path: Path) -> None:
+    cp, sp = _make_processed(tmp_path)
+    result = compute_discursivity(comment_paths=[cp], submission_paths=[sp])
+
+    d = result.to_dict()
+    restored = DiscursivityResult.from_dict(d)
+
+    assert restored.total_comments == result.total_comments
+    assert restored.resolved_comments == result.resolved_comments
+    assert restored.unresolved_comments == result.unresolved_comments
+    assert restored.parse_errors == result.parse_errors
+    assert restored.sorted_months() == result.sorted_months()
+    assert restored.sorted_subreddits() == result.sorted_subreddits()
+
+    for key, bucket in result.buckets.items():
+        rb = restored.buckets[key]
+        assert rb.count == bucket.count
+        assert rb.mean_depth == pytest.approx(bucket.mean_depth)
+        assert rb.threading_ratio == pytest.approx(bucket.threading_ratio)
+
+
+def test_save_and_load_cache(tmp_path: Path) -> None:
+    cp, sp = _make_processed(tmp_path)
+    result = compute_discursivity(comment_paths=[cp], submission_paths=[sp])
+
+    save_discursivity(result, comment_paths=[cp], submission_paths=[sp], out_dir=tmp_path)
+
+    loaded = load_discursivity(
+        comment_paths=[cp], submission_paths=[sp], cache_dir=tmp_path,
+    )
+    assert loaded is not None
+    assert loaded.total_comments == result.total_comments
+    assert loaded.resolved_comments == result.resolved_comments
+    assert loaded.sorted_months() == result.sorted_months()
+
+
+def test_load_cache_stale_after_file_change(tmp_path: Path) -> None:
+    """Cache is invalidated when an input file is modified."""
+    cp, sp = _make_processed(tmp_path)
+    result = compute_discursivity(comment_paths=[cp], submission_paths=[sp])
+    save_discursivity(result, comment_paths=[cp], submission_paths=[sp], out_dir=tmp_path)
+
+    # Mutate the comments file → fingerprint should change.
+    write_zst_jsonl(cp, SAMPLE_COMMENTS + SAMPLE_COMMENTS)
+
+    loaded = load_discursivity(
+        comment_paths=[cp], submission_paths=[sp], cache_dir=tmp_path,
+    )
+    assert loaded is None
+
+
+def test_load_cache_returns_none_when_missing(tmp_path: Path) -> None:
+    cp, sp = _make_processed(tmp_path)
+    loaded = load_discursivity(
+        comment_paths=[cp], submission_paths=[sp], cache_dir=tmp_path,
+    )
+    assert loaded is None

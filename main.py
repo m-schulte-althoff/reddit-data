@@ -181,7 +181,11 @@ def cmd_describe() -> int:
 
 def cmd_discursivity() -> int:
     """Compute comment-depth / discursivity metrics from filtered data."""
-    from src.discursivity import compute_discursivity
+    from src.discursivity import (
+        _discover_filtered_paths,
+        compute_discursivity,
+        save_discursivity,
+    )
     from views import (
         plot_discursivity_mean_depth,
         plot_discursivity_threading_ratio,
@@ -192,6 +196,14 @@ def cmd_discursivity() -> int:
     if result.resolved_comments == 0:
         logging.getLogger(__name__).warning("No resolved comments — skipping outputs.")
         return 0
+
+    # Persist result so downstream commands can reuse it.
+    save_discursivity(
+        result,
+        comment_paths=_discover_filtered_paths("comments"),
+        submission_paths=_discover_filtered_paths("submissions"),
+    )
+
     write_discursivity_csv(result, "discursivity-monthly.csv")
     plot_discursivity_mean_depth(result, "discursivity-mean-depth-top15.svg")
     plot_discursivity_mean_depth(result, "discursivity-mean-depth-all.svg", top_n=None)
@@ -202,7 +214,12 @@ def cmd_discursivity() -> int:
 
 def cmd_resilience() -> int:
     """Engagement-vs-decline analysis across the GenAI cutoff."""
-    from src.discursivity import compute_discursivity
+    from src.discursivity import (
+        _discover_filtered_paths,
+        compute_discursivity,
+        load_discursivity,
+        save_discursivity,
+    )
     from src.resilience import compute_resilience
     from views import (
         plot_resilience_boxplot,
@@ -212,7 +229,16 @@ def cmd_resilience() -> int:
         write_resilience_stats_csv,
     )
 
-    disc = compute_discursivity()
+    disc = load_discursivity()
+    if disc is None:
+        logging.getLogger(__name__).info("Recomputing discursivity (no valid cache).")
+        disc = compute_discursivity()
+        if disc.resolved_comments > 0:
+            save_discursivity(
+                disc,
+                comment_paths=_discover_filtered_paths("comments"),
+                submission_paths=_discover_filtered_paths("submissions"),
+            )
     if disc.resolved_comments == 0:
         logging.getLogger(__name__).warning("No resolved comments — skipping.")
         return 0
