@@ -298,3 +298,22 @@ def test_plot_discursivity_threading_ratio(
     out = plot_discursivity_threading_ratio(result, "test-threading.svg")
     assert out.exists()
     assert out.stat().st_size > 0
+
+
+def test_compute_discursivity_integer_ids(tmp_path: Path) -> None:
+    """parent_id / id may be integers in some records — must not crash."""
+    d = tmp_path / "processed"
+    d.mkdir(parents=True, exist_ok=True)
+    records = [
+        {"id": 100, "parent_id": "t3_s1", "subreddit": "test", "created_utc": 1654100000},
+        {"id": "c2", "parent_id": 999, "subreddit": "test", "created_utc": 1654100000},
+    ]
+    cp = d / "filter-comments-intid.jsonl.zst"
+    write_zst_jsonl(cp, records)
+    sp = d / "filter-submissions-empty.jsonl.zst"
+    write_zst_jsonl(sp, [])
+
+    result = compute_discursivity(comment_paths=[cp], submission_paths=[sp])
+    assert result.total_comments == 2
+    # First comment has t3_ parent → depth 1 → resolved
+    assert result.resolved_comments >= 1

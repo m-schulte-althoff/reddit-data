@@ -196,8 +196,8 @@ def compute_discursivity(
         for obj in _stream_zst(path):
             result.total_comments += 1
 
-            comment_id: str = obj.get("id", "")
-            parent_id: str = obj.get("parent_id", "")
+            comment_id = str(obj.get("id", ""))
+            parent_id = str(obj.get("parent_id", ""))
             ts = _extract_created_utc(obj)
             sub: str = obj.get("subreddit", "unknown")
             month = _epoch_to_month(ts) if ts is not None else "unknown"
