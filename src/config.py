@@ -9,8 +9,8 @@ from pathlib import Path
 # ── Time window ──────────────────────────────────────────────────────────────
 # 18 months before 2022-11-30 and 12 months after, interpreted literally.
 # Adjust these two values to change the extraction window.
-START_TS = datetime(2024, 10, 1, 0, 0, 0, tzinfo=timezone.utc)
-END_EXCLUSIVE_TS = datetime(2024, 11, 1, 0, 0, 0, tzinfo=timezone.utc)
+START_TS = datetime(2022, 2, 1, 0, 0, 0, tzinfo=timezone.utc)
+END_EXCLUSIVE_TS = datetime(2022, 4, 1, 0, 0, 0, tzinfo=timezone.utc)
 
 START_EPOCH: int = int(START_TS.timestamp())
 END_EXCLUSIVE_EPOCH: int = int(END_EXCLUSIVE_TS.timestamp())

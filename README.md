@@ -138,6 +138,7 @@ Outputs (per kind — comments and submissions):
 | `output/tables/describe-{kind}-monthly.csv` | Subreddit × month pivot table (all subreddits) |
 | `output/tables/describe-{kind}-monthly-top15.csv` | Same, top 15 subreddits only |
 | `output/figures/describe-{kind}-trend-aggregated.svg` | Aggregated monthly post volume |
+| `output/figures/describe-{kind}-trend-community-types.svg` | Publication-ready monthly volume trend comparing healthcare vs. general communities |
 | `output/figures/describe-{kind}-trend-all.svg` | Per-subreddit monthly trends (capped at 50 lines) |
 | `output/figures/describe-{kind}-trend-top15.svg` | Top 15 subreddits monthly trends |
 

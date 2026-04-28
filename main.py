@@ -162,6 +162,7 @@ def cmd_describe() -> int:
     from src.describe import describe_filtered
     from views import (
         plot_describe_trend_aggregated,
+        plot_describe_trend_by_community_type,
         plot_describe_trend_per_subreddit,
         write_describe_monthly_csv,
         write_describe_summary_csv,
@@ -176,6 +177,10 @@ def cmd_describe() -> int:
         write_describe_monthly_csv(result, f"describe-{kind}-monthly.csv")
         write_describe_monthly_csv(result, f"describe-{kind}-monthly-top15.csv", top_n=15)
         plot_describe_trend_aggregated(result, f"describe-{kind}-trend-aggregated.svg")
+        plot_describe_trend_by_community_type(
+            result,
+            f"describe-{kind}-trend-community-types.svg",
+        )
         plot_describe_trend_per_subreddit(result, f"describe-{kind}-trend-all.svg", top_n=None)
         plot_describe_trend_per_subreddit(result, f"describe-{kind}-trend-top15.svg")
     return 0

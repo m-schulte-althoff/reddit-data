@@ -195,6 +195,47 @@ def test_plot_describe_trend_aggregated(tmp_path: Path, monkeypatch: pytest.Monk
     assert out.stat().st_size > 0
 
 
+def test_aggregate_describe_counts_by_community_type() -> None:
+    from views import _aggregate_describe_counts_by_community_type
+
+    result = DescribeResult(kind="comments")
+    result.subreddit_monthly_counts[("AskReddit", "2022-06")] = 2
+    result.subreddit_monthly_counts[("science", "2022-06")] = 1
+    result.subreddit_monthly_counts[("Depression", "2022-06")] = 4
+    result.subreddit_monthly_counts[("Depression", "2022-07")] = 3
+    result.subreddit_monthly_counts[("funny", "2022-06")] = 99
+
+    monthly_counts, subreddit_counts = _aggregate_describe_counts_by_community_type(result)
+
+    assert monthly_counts["general"]["2022-06"] == 3
+    assert monthly_counts["health"]["2022-06"] == 4
+    assert monthly_counts["health"]["2022-07"] == 3
+    assert monthly_counts["general"].get("2022-07", 0) == 0
+    assert subreddit_counts == {"health": 1, "general": 2}
+
+
+def test_plot_describe_trend_by_community_type(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from views import plot_describe_trend_by_community_type
+
+    monkeypatch.setattr("src.config.FIGURES_DIR", tmp_path)
+
+    result = DescribeResult(kind="comments")
+    result.monthly_counts["2022-06"] = 6
+    result.monthly_counts["2022-07"] = 5
+    result.subreddit_monthly_counts[("AskReddit", "2022-06")] = 2
+    result.subreddit_monthly_counts[("science", "2022-06")] = 1
+    result.subreddit_monthly_counts[("Depression", "2022-06")] = 3
+    result.subreddit_monthly_counts[("Depression", "2022-07")] = 5
+
+    out = plot_describe_trend_by_community_type(result, "test-community-types.svg")
+    assert out.exists()
+    assert out.stat().st_size > 0
+    assert "<svg" in out.read_text(encoding="utf-8")
+
+
 def test_plot_describe_trend_per_subreddit(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     from views import plot_describe_trend_per_subreddit
 

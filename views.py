@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections import Counter
 import csv
 import json
 import logging
@@ -11,6 +12,7 @@ from typing import TYPE_CHECKING
 
 import matplotlib
 matplotlib.use("Agg")  # non-interactive backend
+from matplotlib.axes import Axes
 import matplotlib.dates as mdates
 import matplotlib.pyplot as plt
 import matplotlib.ticker as ticker
@@ -19,6 +21,19 @@ from src.config import FIGURES_DIR, TABLES_DIR
 
 # Maximum subreddits shown in a single line chart before it becomes unreadable.
 _MAX_TREND_LINES: int = 50
+
+_DESCRIBE_COMMUNITY_STYLES: dict[str, dict[str, str]] = {
+    "health": {
+        "label": "Healthcare communities",
+        "color": "#1b9e77",
+        "marker": "o",
+    },
+    "general": {
+        "label": "General communities",
+        "color": "#d95f02",
+        "marker": "s",
+    },
+}
 
 if TYPE_CHECKING:
     from src.describe import DescribeResult
@@ -170,7 +185,116 @@ def plot_describe_trend_aggregated(result: DescribeResult, filename: str) -> Pat
     ax.set_ylabel("Number of posts")
     ax.set_title(f"Monthly post volume — {result.kind} (all subreddits)")
     ax.yaxis.set_major_formatter(ticker.FuncFormatter(lambda x, _: f"{int(x):,}"))
-    _format_date_axis(ax, dates)
+    _format_date_axis(ax)
+    fig.tight_layout()
+    fig.savefig(out)
+    plt.close(fig)
+
+    log.info("Wrote %s", out)
+    return out
+
+
+def _aggregate_describe_counts_by_community_type(
+    result: DescribeResult,
+) -> tuple[dict[str, Counter[str]], dict[str, int]]:
+    """Aggregate monthly describe counts by helpers community type."""
+    from src.helpers import classify_subreddit
+
+    monthly_counts: dict[str, Counter[str]] = {
+        "health": Counter(),
+        "general": Counter(),
+    }
+    subreddits_by_type: dict[str, set[str]] = {
+        "health": set(),
+        "general": set(),
+    }
+
+    for (subreddit, month), count in result.subreddit_monthly_counts.items():
+        community_type = classify_subreddit(subreddit)
+        if community_type not in monthly_counts:
+            continue
+        monthly_counts[community_type][month] += count
+        subreddits_by_type[community_type].add(subreddit)
+
+    subreddit_counts = {
+        community_type: len(subreddits)
+        for community_type, subreddits in subreddits_by_type.items()
+    }
+    return monthly_counts, subreddit_counts
+
+
+def plot_describe_trend_by_community_type(
+    result: DescribeResult,
+    filename: str,
+) -> Path:
+    """Publication-ready line chart of monthly volume by community type."""
+    FIGURES_DIR.mkdir(parents=True, exist_ok=True)
+    out = FIGURES_DIR / filename
+
+    months = result.sorted_months()
+    dates = _month_strings_to_dates(months)
+    monthly_counts, subreddit_counts = _aggregate_describe_counts_by_community_type(result)
+    plotted_types = [
+        community_type
+        for community_type in ("health", "general")
+        if subreddit_counts[community_type] > 0
+    ]
+
+    fig, ax = plt.subplots(figsize=(12, 6.5))
+
+    if not plotted_types:
+        ax.text(
+            0.5,
+            0.5,
+            "No classified healthcare or general communities found.",
+            ha="center",
+            va="center",
+            transform=ax.transAxes,
+            fontsize=12,
+        )
+        ax.set_axis_off()
+    else:
+        marker_step = max(1, len(dates) // 12) if dates else 1
+        for community_type in plotted_types:
+            style = _DESCRIBE_COMMUNITY_STYLES[community_type]
+            counts = [monthly_counts[community_type].get(month, 0) for month in months]
+            ax.plot(
+                dates,
+                counts,
+                color=style["color"],
+                linewidth=2.4,
+                marker=style["marker"],
+                markersize=5,
+                markevery=marker_step,
+                label=(
+                    f"{style['label']} (n={subreddit_counts[community_type]})"
+                ),
+            )
+
+        ax.set_xlabel("Month")
+        ax.set_ylabel(f"{result.kind.capitalize()} per month")
+        ax.set_title(
+            f"Monthly {result.kind} volume by community type",
+            loc="left",
+            pad=14,
+            fontweight="bold",
+        )
+        ax.text(
+            0.0,
+            1.01,
+            "Aggregated across subreddits using the helpers community-type classification.",
+            transform=ax.transAxes,
+            fontsize=10,
+            color="#4d4d4d",
+        )
+        ax.yaxis.set_major_formatter(ticker.FuncFormatter(lambda x, _: f"{int(x):,}"))
+        ax.grid(axis="y", color="#d9d9d9", linewidth=0.8, alpha=0.9)
+        ax.spines["top"].set_visible(False)
+        ax.spines["right"].set_visible(False)
+        ax.legend(frameon=False, ncols=2, loc="upper left")
+        ax.margins(x=0.02)
+        _format_date_axis(ax)
+
     fig.tight_layout()
     fig.savefig(out)
     plt.close(fig)
@@ -233,7 +357,7 @@ def plot_describe_trend_per_subreddit(
     ax.set_title(f"Monthly post volume — {result.kind} ({title_suffix})")
     ax.yaxis.set_major_formatter(ticker.FuncFormatter(lambda x, _: f"{int(x):,}"))
     ax.legend(fontsize="x-small", loc="upper left", bbox_to_anchor=(1.01, 1.0))
-    _format_date_axis(ax, dates)
+    _format_date_axis(ax)
     fig.tight_layout()
     fig.savefig(out)
     plt.close(fig)
@@ -254,7 +378,7 @@ def _month_strings_to_dates(months: list[str]) -> list[datetime]:
     return [datetime.strptime(m, "%Y-%m") for m in months]
 
 
-def _format_date_axis(ax: plt.Axes, dates: list[datetime]) -> None:
+def _format_date_axis(ax: Axes) -> None:
     """Configure the x-axis as a date axis with readable tick spacing."""
     ax.xaxis.set_major_locator(mdates.AutoDateLocator())
     ax.xaxis.set_major_formatter(mdates.DateFormatter("%Y-%m"))
@@ -390,7 +514,7 @@ def plot_discursivity_mean_depth(
         f"Mean comment depth over time ({_sub_label(top_n, len(result.sorted_subreddits()))})"
     )
     ax.legend(fontsize="x-small", loc="upper left", bbox_to_anchor=(1.01, 1.0))
-    _format_date_axis(ax, dates)
+    _format_date_axis(ax)
     fig.tight_layout()
     fig.savefig(out)
     plt.close(fig)
@@ -435,7 +559,7 @@ def plot_discursivity_threading_ratio(
         f"Threading ratio over time ({_sub_label(top_n, len(result.sorted_subreddits()))})"
     )
     ax.legend(fontsize="x-small", loc="upper left", bbox_to_anchor=(1.01, 1.0))
-    _format_date_axis(ax, dates)
+    _format_date_axis(ax)
     fig.tight_layout()
     fig.savefig(out)
     plt.close(fig)
@@ -692,7 +816,7 @@ def plot_resilience_indexed_trend(result: ResilienceResult, filename: str) -> Pa
     ax.set_ylabel("Indexed activity (pre-period mean = 100)")
     ax.set_title("Indexed comment activity: high vs. low engagement subreddits")
     ax.legend()
-    _format_date_axis(ax, dates)
+    _format_date_axis(ax)
     fig.tight_layout()
     fig.savefig(out)
     plt.close(fig)
@@ -974,7 +1098,7 @@ def plot_helpers_gini_trend(
     ax.set_ylabel("Gini coefficient")
     ax.set_title("Helper concentration (Gini) over time")
     ax.legend(fontsize="x-small", loc="upper left", bbox_to_anchor=(1.01, 1.0))
-    _format_date_axis(ax, dates)
+    _format_date_axis(ax)
     fig.tight_layout()
     fig.savefig(out)
     plt.close(fig)
