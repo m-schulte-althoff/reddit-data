@@ -20,46 +20,49 @@ uv run python3 main.py filter
 # 4. Filter by subreddit list (Chan-2025)
 uv run python3 main.py filter-subreddit
 
-# 5. Descriptive overview of filtered data (counts, trends)
+# 5. If filtered data already exists: run the full filtered-data analysis stack
+uv run python3 main.py all-analysis
+
+# 6. Descriptive overview of filtered data (counts, trends)
 uv run python3 main.py describe
 
-# 6. Monthly subreddit panel for all downstream analyses
+# 7. Monthly subreddit panel for all downstream analyses
 uv run python3 main.py panel
 
-# 7. Main DiD / event-study analysis
+# 8. Main DiD / event-study analysis
 uv run python3 main.py did
 
-# 8. Responsiveness and support-availability metrics
+# 9. Responsiveness and support-availability metrics
 uv run python3 main.py responsiveness
 
-# 9. Moderator / mechanism analysis
+# 10. Moderator / mechanism analysis
 uv run python3 main.py mechanisms
 
-# 10. AI-mention trends
+# 11. AI-mention trends
 uv run python3 main.py ai-mentions
 
-# 11. Simple content proxy metrics
+# 12. Simple content proxy metrics
 uv run python3 main.py content-metrics
 
-# 12. Bond-vs-identity interaction metrics
+# 13. Bond-vs-identity interaction metrics
 uv run python3 main.py interactions
 
-# 13. Full first-pass WIP suite
+# 14. Full first-pass WIP suite
 uv run python3 main.py wip
 
-# 14. Comment-depth / discursivity analysis
+# 15. Comment-depth / discursivity analysis
 uv run python3 main.py discursivity
 
-# 15. Engagement vs. post-GenAI decline analysis
+# 16. Engagement vs. post-GenAI decline analysis
 uv run python3 main.py resilience
 
-# 16. Repeat-helper concentration analysis
+# 17. Repeat-helper concentration analysis
 uv run python3 main.py helpers
 
-# 17. Compute descriptive statistics on raw data
+# 18. Compute descriptive statistics on raw data
 uv run python3 main.py analyse
 
-# 18. Reservoir-sample 500 records per type to CSV
+# 19. Reservoir-sample 500 records per type to CSV
 uv run python3 main.py sample
 ```
 
@@ -93,6 +96,7 @@ Edit `src/config.py` to change:
 | `verify` | Check that all raw files exist, are non-empty, and have valid zstd headers. |
 | `filter` | Merge and filter raw files into `data/processed/` within the time window. |
 | `filter-subreddit` | Filter raw data by subreddit list (Chan-2025). Supports resume, time window, and month selection. |
+| `all-analysis` | Run the full filtered-data analysis stack (`describe`, `discursivity`, `helpers`, `resilience`, `panel`, `did`, `responsiveness`, `mechanisms`, `ai-mentions`, `content-metrics`, `interactions`, `wip`) and write `output/summary.md`. |
 | `panel` | Build the fingerprinted subreddit × month panel used by all downstream WIP analyses. |
 | `did` | Estimate two-way fixed-effects DiD models, robustness checks, and event studies from the monthly panel. |
 | `responsiveness` | Compute post-level and monthly responsiveness / support-availability metrics. |
@@ -119,6 +123,7 @@ Edit `src/config.py` to change:
 │   ├── config.py            # Shared configuration
 │   ├── arctic_shift.py      # Torrent download, filter, verify
 │   ├── filter.py            # Subreddit filtering with resume
+│   ├── all_analysis.py      # Combined filtered-data analysis runner and summary
 │   ├── io_utils.py          # Shared streaming, month, and fingerprint helpers
 │   ├── describe.py          # Descriptive overview of filtered data
 │   ├── panel.py             # Monthly subreddit panel with cache metadata
@@ -140,6 +145,7 @@ Edit `src/config.py` to change:
 │   ├── raw/                 # Immutable raw .zst files (git-ignored)
 │   └── processed/           # Filtered output (git-ignored)
 ├── output/
+│   ├── summary.md           # Combined filtered-data analysis summary
 │   ├── tables/              # CSV summaries & metrics
 │   └── figures/             # SVG trend plots
 ├── logs/                    # Timestamped run logs
@@ -156,6 +162,11 @@ uv run python3 main.py download
 uv run python3 main.py verify
 uv run python3 main.py filter
 uv run python3 main.py filter-subreddit
+
+# If filtered data already exists, this one command runs the post-filter stack
+uv run python3 main.py all-analysis
+
+# Individual post-filter commands (optional / for debugging specific layers)
 uv run python3 main.py panel
 uv run python3 main.py did
 uv run python3 main.py responsiveness
@@ -173,6 +184,37 @@ uv run python3 main.py sample
 ```
 
 All outputs are deterministic (fixed random seed, stable sorting).
+
+### All Analysis (filtered data already available)
+
+If `data/processed/` already contains the filtered `.zst` files, the
+`all-analysis` command is the shortest path to regenerate the post-filter
+analysis stack.
+
+```bash
+uv run python3 main.py all-analysis
+```
+
+It runs, in order:
+
+- `describe`
+- `discursivity`
+- `helpers`
+- `resilience`
+- `panel`
+- `did`
+- `responsiveness`
+- `mechanisms`
+- `ai-mentions`
+- `content-metrics`
+- `interactions`
+- `wip`
+
+Additional output:
+
+| File | Content |
+|---|---|
+| `output/summary.md` | Combined Markdown index of the generated tables and figures, with the WIP key-results summary inlined at the top |
 
 ### Panel (monthly subreddit panel)
 

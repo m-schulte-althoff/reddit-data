@@ -18,6 +18,7 @@ Commands:
     verify         Check that all raw files are present and valid.
     filter         Filter raw data to the configured time window.
     analyse        Compute descriptive statistics for comments and submissions.
+    all-analysis   Run all filtered-data analyses and write output/summary.md.
     panel          Build the monthly subreddit panel for downstream analyses.
     did            Estimate DiD and event-study models from the monthly panel.
     responsiveness Compute post-level and monthly responsiveness metrics.
@@ -162,6 +163,15 @@ def cmd_analyse() -> int:
         json_out = TABLES_DIR / f"analysis-{kind}-summary.json"
         json_out.write_text(json.dumps(stats, indent=2, ensure_ascii=False), encoding="utf-8")
         logging.getLogger(__name__).info("Wrote %s", json_out)
+    return 0
+
+
+def cmd_all_analysis() -> int:
+    """Run all filtered-data analyses and write a combined summary."""
+    from src.all_analysis import allAnalysis
+
+    result = allAnalysis()
+    logging.getLogger(__name__).info("Wrote %s", result.summary_path)
     return 0
 
 
@@ -409,6 +419,7 @@ COMMANDS: dict[str, tuple[callable, str]] = {  # type: ignore[type-arg]
     "filter": (cmd_filter, "Filter raw data to configured time window"),
     "filter-subreddit": (cmd_filter_subreddit, "Filter by subreddit list (Chan-2025)"),
     "analyse": (cmd_analyse, "Descriptive statistics for raw data"),
+    "all-analysis": (cmd_all_analysis, "Run all filtered-data analyses and summary"),
     "panel": (cmd_panel, "Monthly subreddit panel for downstream analyses"),
     "did": (cmd_did, "DiD and event-study models from the monthly panel"),
     "responsiveness": (cmd_responsiveness, "Post-level and monthly responsiveness metrics"),
