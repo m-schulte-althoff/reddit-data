@@ -9,6 +9,7 @@ dependencies = [
     "pyarrow",
     "matplotlib",
     "scipy",
+    "statsmodels",
 ]
 
 [project.optional-dependencies]

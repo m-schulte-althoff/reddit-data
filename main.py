@@ -18,6 +18,14 @@ Commands:
     verify         Check that all raw files are present and valid.
     filter         Filter raw data to the configured time window.
     analyse        Compute descriptive statistics for comments and submissions.
+    panel          Build the monthly subreddit panel for downstream analyses.
+    did            Estimate DiD and event-study models from the monthly panel.
+    responsiveness Compute post-level and monthly responsiveness metrics.
+    mechanisms     Estimate moderator/mechanism models from panel structure.
+    ai-mentions    Count GenAI mentions in comments and submissions.
+    content-metrics Compute simple content/effort/support proxy metrics.
+    interactions   Compute bond-vs-identity interaction structure metrics.
+    wip            Run the full WIP suite and write key-result summaries.
     describe       Descriptive overview of filtered data (trends, per-subreddit).
     discursivity   Comment-depth / threading metrics from filtered data.
     resilience     Engagement vs. post-GenAI decline analysis.
@@ -154,6 +162,85 @@ def cmd_analyse() -> int:
         json_out = TABLES_DIR / f"analysis-{kind}-summary.json"
         json_out.write_text(json.dumps(stats, indent=2, ensure_ascii=False), encoding="utf-8")
         logging.getLogger(__name__).info("Wrote %s", json_out)
+    return 0
+
+
+def cmd_panel() -> int:
+    """Build the monthly subreddit panel for downstream analyses."""
+    from src.panel import ensure_monthly_panel
+
+    csv_path, metadata_path, metadata = ensure_monthly_panel()
+    logging.getLogger(__name__).info(
+        "Panel ready: %s (%d rows, %d subreddits)",
+        csv_path,
+        metadata.get("n_rows", 0),
+        metadata.get("n_subreddits", 0),
+    )
+    logging.getLogger(__name__).info("Panel metadata: %s", metadata_path)
+    return 0
+
+
+def cmd_did() -> int:
+    """Estimate DiD and event-study models from the monthly panel."""
+    from src.did import run_did_analysis
+
+    result = run_did_analysis()
+    logging.getLogger(__name__).info("Wrote %s", result.table_paths["summary"])
+    return 0
+
+
+def cmd_responsiveness() -> int:
+    """Compute post-level and monthly responsiveness metrics."""
+    from src.responsiveness import run_responsiveness_analysis
+
+    result = run_responsiveness_analysis()
+    logging.getLogger(__name__).info("Wrote %s", result.table_paths["monthly"])
+    return 0
+
+
+def cmd_mechanisms() -> int:
+    """Estimate moderator/mechanism models from panel structure."""
+    from src.mechanisms import run_mechanisms_analysis
+
+    result = run_mechanisms_analysis()
+    logging.getLogger(__name__).info("Wrote %s", result.table_paths["summary"])
+    return 0
+
+
+def cmd_ai_mentions() -> int:
+    """Count GenAI mentions in comments and submissions."""
+    from src.ai_mentions import run_ai_mentions_analysis
+
+    result = run_ai_mentions_analysis()
+    logging.getLogger(__name__).info("Wrote %s", result.table_paths["monthly"])
+    return 0
+
+
+def cmd_content_metrics() -> int:
+    """Compute simple content/effort/support proxy metrics."""
+    from src.content_metrics import run_content_metrics_analysis
+
+    result = run_content_metrics_analysis()
+    logging.getLogger(__name__).info("Wrote %s", result.table_paths["monthly"])
+    return 0
+
+
+def cmd_interactions() -> int:
+    """Compute bond-vs-identity interaction structure metrics."""
+    from src.interactions import run_interactions_analysis
+
+    result = run_interactions_analysis()
+    logging.getLogger(__name__).info("Wrote %s", result.table_paths["monthly"])
+    return 0
+
+
+def cmd_wip() -> int:
+    """Run the full WIP suite and write key-result summaries."""
+    from src.wip import run_wip_suite
+
+    result = run_wip_suite()
+    logging.getLogger(__name__).info("Wrote %s", result.csv_path)
+    logging.getLogger(__name__).info("Wrote %s", result.markdown_path)
     return 0
 
 
@@ -322,6 +409,14 @@ COMMANDS: dict[str, tuple[callable, str]] = {  # type: ignore[type-arg]
     "filter": (cmd_filter, "Filter raw data to configured time window"),
     "filter-subreddit": (cmd_filter_subreddit, "Filter by subreddit list (Chan-2025)"),
     "analyse": (cmd_analyse, "Descriptive statistics for raw data"),
+    "panel": (cmd_panel, "Monthly subreddit panel for downstream analyses"),
+    "did": (cmd_did, "DiD and event-study models from the monthly panel"),
+    "responsiveness": (cmd_responsiveness, "Post-level and monthly responsiveness metrics"),
+    "mechanisms": (cmd_mechanisms, "Moderator/mechanism models from panel structure"),
+    "ai-mentions": (cmd_ai_mentions, "GenAI mention trends in comments and submissions"),
+    "content-metrics": (cmd_content_metrics, "Simple content/effort/support proxy metrics"),
+    "interactions": (cmd_interactions, "Bond-vs-identity interaction structure metrics"),
+    "wip": (cmd_wip, "Run the full WIP suite and key-result summaries"),
     "describe": (cmd_describe, "Descriptive overview of filtered data"),
     "discursivity": (cmd_discursivity, "Comment-depth / threading metrics"),
     "resilience": (cmd_resilience, "Engagement vs. post-GenAI decline analysis"),

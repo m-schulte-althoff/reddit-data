@@ -23,19 +23,43 @@ uv run python3 main.py filter-subreddit
 # 5. Descriptive overview of filtered data (counts, trends)
 uv run python3 main.py describe
 
-# 6. Comment-depth / discursivity analysis
+# 6. Monthly subreddit panel for all downstream analyses
+uv run python3 main.py panel
+
+# 7. Main DiD / event-study analysis
+uv run python3 main.py did
+
+# 8. Responsiveness and support-availability metrics
+uv run python3 main.py responsiveness
+
+# 9. Moderator / mechanism analysis
+uv run python3 main.py mechanisms
+
+# 10. AI-mention trends
+uv run python3 main.py ai-mentions
+
+# 11. Simple content proxy metrics
+uv run python3 main.py content-metrics
+
+# 12. Bond-vs-identity interaction metrics
+uv run python3 main.py interactions
+
+# 13. Full first-pass WIP suite
+uv run python3 main.py wip
+
+# 14. Comment-depth / discursivity analysis
 uv run python3 main.py discursivity
 
-# 7. Engagement vs. post-GenAI decline analysis
+# 15. Engagement vs. post-GenAI decline analysis
 uv run python3 main.py resilience
 
-# 8. Repeat-helper concentration analysis
+# 16. Repeat-helper concentration analysis
 uv run python3 main.py helpers
 
-# 9. Compute descriptive statistics on raw data
+# 17. Compute descriptive statistics on raw data
 uv run python3 main.py analyse
 
-# 10. Reservoir-sample 500 records per type to CSV
+# 18. Reservoir-sample 500 records per type to CSV
 uv run python3 main.py sample
 ```
 
@@ -69,6 +93,14 @@ Edit `src/config.py` to change:
 | `verify` | Check that all raw files exist, are non-empty, and have valid zstd headers. |
 | `filter` | Merge and filter raw files into `data/processed/` within the time window. |
 | `filter-subreddit` | Filter raw data by subreddit list (Chan-2025). Supports resume, time window, and month selection. |
+| `panel` | Build the fingerprinted subreddit × month panel used by all downstream WIP analyses. |
+| `did` | Estimate two-way fixed-effects DiD models, robustness checks, and event studies from the monthly panel. |
+| `responsiveness` | Compute post-level and monthly responsiveness / support-availability metrics. |
+| `mechanisms` | Test whether pre-period helper concentration, depth, and responsiveness moderate post-GenAI change. |
+| `ai-mentions` | Count monthly mentions of ChatGPT, GPT, LLM, OpenAI, Copilot, Gemini, Claude, and related terms. |
+| `content-metrics` | Compute lightweight effort / support / experience / information text proxies per subreddit-month. |
+| `interactions` | Compute monthly bond-vs-identity interaction metrics: unique/repeat/new authors, dyads, thread concentration, and bond/identity indices. |
+| `wip` | Run `panel` → `did` → `responsiveness` → `mechanisms` → `ai-mentions` → `content-metrics` → `interactions` and write concise key-result summaries. |
 | `describe` | Descriptive overview of filtered data: post counts, monthly trends, per-subreddit breakdowns (CSV + SVG). |
 | `discursivity` | Comment-depth / threading metrics from filtered data: mean depth, threading ratio per subreddit per month (CSV + SVG). |
 | `resilience` | Engagement vs. post-GenAI decline: tests whether higher threading ratio / mean depth predicts less activity decline after ChatGPT launch. |
@@ -87,11 +119,20 @@ Edit `src/config.py` to change:
 │   ├── config.py            # Shared configuration
 │   ├── arctic_shift.py      # Torrent download, filter, verify
 │   ├── filter.py            # Subreddit filtering with resume
+│   ├── io_utils.py          # Shared streaming, month, and fingerprint helpers
 │   ├── describe.py          # Descriptive overview of filtered data
+│   ├── panel.py             # Monthly subreddit panel with cache metadata
+│   ├── did.py               # DiD / event-study models and robustness checks
+│   ├── responsiveness.py    # Post-level responsiveness & monthly support metrics
+│   ├── mechanisms.py        # Moderator analysis for resilience mechanisms
+│   ├── ai_mentions.py       # Regex-based GenAI mention trends
+│   ├── content_metrics.py   # Lightweight content / support proxy metrics
+│   ├── interactions.py      # Bond-vs-identity interaction structure metrics
 │   ├── discursivity.py      # Comment-depth & threading analysis
 │   ├── resilience.py        # Engagement vs. post-GenAI decline analysis
 │   ├── helpers.py           # Repeat-helper concentration analysis
 │   ├── hugging_face.py      # HF parquet extraction
+│   ├── wip.py               # Full WIP-suite orchestration and key results
 │   └── analysis.py          # Descriptive stats & sampling (raw data)
 ├── input/
 │   └── subreddit-list-Chan-2025.txt
@@ -115,6 +156,14 @@ uv run python3 main.py download
 uv run python3 main.py verify
 uv run python3 main.py filter
 uv run python3 main.py filter-subreddit
+uv run python3 main.py panel
+uv run python3 main.py did
+uv run python3 main.py responsiveness
+uv run python3 main.py mechanisms
+uv run python3 main.py ai-mentions
+uv run python3 main.py content-metrics
+uv run python3 main.py interactions
+uv run python3 main.py wip
 uv run python3 main.py describe
 uv run python3 main.py discursivity
 uv run python3 main.py resilience
@@ -124,6 +173,83 @@ uv run python3 main.py sample
 ```
 
 All outputs are deterministic (fixed random seed, stable sorting).
+
+### Panel (monthly subreddit panel)
+
+The `panel` command is the main WIP foundation. It streams filtered comments and
+submissions, loads cached discursivity when valid, computes helper concentration
+directly from comment-author counts, and writes a full subreddit × month grid.
+
+Outputs:
+
+| File | Content |
+|---|---|
+| `output/tables/community-monthly-panel.csv` | One row per subreddit-month with counts, author activity, text lengths, deleted/removed shares, score means, depth metrics, helper concentration, and post-GenAI timing fields |
+| `output/tables/community-monthly-panel-metadata.json` | Input fingerprints, month coverage, row counts, and cache metadata |
+
+### DiD and event study
+
+The `did` command estimates fixed-effects models on the monthly panel with
+subreddit-clustered standard errors. The summary table includes the baseline
+unweighted model plus weighted, balanced-panel, winsorized, exclusion, and
+alternative-cutoff robustness checks.
+
+Outputs:
+
+| File | Content |
+|---|---|
+| `output/tables/did-summary.csv` | Main DiD estimates and robustness rows for comments, submissions, and comments per submission |
+| `output/tables/did-event-study-comments.csv` | Event-study coefficients for comment volume |
+| `output/tables/did-event-study-submissions.csv` | Event-study coefficients for submission volume |
+| `output/tables/did-event-study-comments-per-submission.csv` | Event-study coefficients for discussion intensity |
+| `output/figures/did-trends-comments-health-vs-general.svg` | Monthly comment trends by community type |
+| `output/figures/did-trends-submissions-health-vs-general.svg` | Monthly submission trends by community type |
+| `output/figures/did-event-study-comments.svg` | Event-study coefficients for comments |
+| `output/figures/did-event-study-submissions.svg` | Event-study coefficients for submissions |
+| `output/figures/did-event-study-comments-per-submission.svg` | Event-study coefficients for comments per submission |
+
+### Responsiveness and support availability
+
+The `responsiveness` command uses a two-pass design: submissions are indexed
+first, then comments update per-post reply timing, OP follow-up, commenter
+diversity, and depth/threading metrics. Intermediate state is stored in
+`output/cache/responsiveness.sqlite`.
+
+Outputs:
+
+| File | Content |
+|---|---|
+| `output/tables/responsiveness-posts.csv` | Post-level responsiveness metrics |
+| `output/tables/responsiveness-monthly.csv` | Subreddit-month responsiveness summary |
+| `output/figures/responsiveness-reply-rate-health-vs-general.svg` | Reply-rate trends |
+| `output/figures/responsiveness-latency-health-vs-general.svg` | First-reply latency trends |
+| `output/figures/responsiveness-op-followup-health-vs-general.svg` | OP follow-up trends |
+| `output/figures/responsiveness-unanswered-rate-health-vs-general.svg` | Unanswered-rate trends |
+
+### Mechanisms, AI mentions, content proxies, and interactions
+
+These commands extend the WIP story beyond volume trends.
+
+Outputs:
+
+| Command | Main table outputs | Main figure outputs |
+|---|---|---|
+| `mechanisms` | `output/tables/mechanism-moderation-summary.csv` | `output/figures/mechanism-moderation-coefficients.svg`, `output/figures/mechanism-high-low-trends-top5.svg`, `output/figures/mechanism-high-low-trends-reply-rate.svg`, `output/figures/mechanism-high-low-trends-threading.svg` |
+| `ai-mentions` | `output/tables/ai-mentions-monthly.csv` | `output/figures/ai-mentions-health-vs-general-comments.svg`, `output/figures/ai-mentions-health-vs-general-submissions.svg`, `output/figures/ai-mentions-top-subreddits.svg` |
+| `content-metrics` | `output/tables/content-metrics-monthly.csv` | `output/figures/content-length-health-vs-general.svg`, `output/figures/content-question-share-health-vs-general.svg`, `output/figures/content-experience-share-health-vs-general.svg`, `output/figures/content-support-share-health-vs-general.svg` |
+| `interactions` | `output/tables/interactions-monthly.csv` | `output/figures/interactions-bond-index-health-vs-general.svg`, `output/figures/interactions-identity-index-health-vs-general.svg` |
+
+### WIP suite
+
+The `wip` command runs the full first-pass manuscript workflow in the intended
+order and reuses caches when the input fingerprints have not changed.
+
+Outputs:
+
+| File | Content |
+|---|---|
+| `output/tables/wip-key-results.csv` | Flat key-result summary for quick inspection or spreadsheet use |
+| `output/tables/wip-key-results.md` | Markdown digest of coverage, DiD estimates, robustness checks, responsiveness, helper concentration, AI mentions, content proxies, and interaction indices |
 
 ### Describe (filtered data overview)
 
@@ -244,5 +370,5 @@ appended as additional zstd frames.
 
 ```bash
 uv run ruff check .
-uv run pytest -q
+uv run --extra dev pytest -q
 ```

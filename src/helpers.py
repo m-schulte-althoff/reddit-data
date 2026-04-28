@@ -124,12 +124,20 @@ HEALTH_SUBREDDITS: frozenset[str] = frozenset({
     "troubledteens",
 })
 
+_GENERAL_SUBREDDITS_NORMALIZED: frozenset[str] = frozenset(
+    sub.casefold() for sub in GENERAL_SUBREDDITS
+)
+_HEALTH_SUBREDDITS_NORMALIZED: frozenset[str] = frozenset(
+    sub.casefold() for sub in HEALTH_SUBREDDITS
+)
+
 
 def classify_subreddit(sub: str) -> str:
     """Return ``'general'``, ``'health'``, or ``'other'``."""
-    if sub in GENERAL_SUBREDDITS:
+    normalized = sub.casefold()
+    if normalized in _GENERAL_SUBREDDITS_NORMALIZED:
         return "general"
-    if sub in HEALTH_SUBREDDITS:
+    if normalized in _HEALTH_SUBREDDITS_NORMALIZED:
         return "health"
     return "other"
 
