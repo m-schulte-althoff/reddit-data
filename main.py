@@ -41,7 +41,7 @@ from __future__ import annotations
 import json
 import logging
 import sys
-from datetime import datetime
+from datetime import datetime, timezone
 
 from src.config import LOGS_DIR, TABLES_DIR
 
@@ -59,6 +59,23 @@ def _setup_logging() -> None:
         format="%(asctime)s %(levelname)-8s %(name)s: %(message)s",
         handlers=handlers,
     )
+
+
+def _parse_thread_prep_only_args(command_name: str):
+    """Parse the optional submission-hash thread-prep flag for simple commands."""
+    import argparse
+
+    from src.thread_prep import normalize_thread_prep_config
+
+    parser = argparse.ArgumentParser(prog=command_name)
+    parser.add_argument(
+        "--thread-prep-partitions",
+        type=int,
+        default=0,
+        help="Partition thread-oriented processing by submission-id hash into N shards",
+    )
+    args = parser.parse_args(sys.argv[2:])
+    return normalize_thread_prep_config(args.thread_prep_partitions)
 
 
 # ── Commands ─────────────────────────────────────────────────────────────────
@@ -95,8 +112,6 @@ def cmd_filter_subreddit() -> int:
         --no-resume                start fresh instead of resuming
     """
     import argparse
-    from datetime import datetime, timezone
-
     from src.filter import filter_all
 
     parser = argparse.ArgumentParser(prog="filter-subreddit")
@@ -170,7 +185,8 @@ def cmd_all_analysis() -> int:
     """Run all filtered-data analyses and write a combined summary."""
     from src.all_analysis import allAnalysis
 
-    result = allAnalysis()
+    thread_prep = _parse_thread_prep_only_args("all-analysis")
+    result = allAnalysis(thread_prep=thread_prep)
     logging.getLogger(__name__).info("Wrote %s", result.summary_path)
     return 0
 
@@ -179,7 +195,8 @@ def cmd_panel() -> int:
     """Build the monthly subreddit panel for downstream analyses."""
     from src.panel import ensure_monthly_panel
 
-    csv_path, metadata_path, metadata = ensure_monthly_panel()
+    thread_prep = _parse_thread_prep_only_args("panel")
+    csv_path, metadata_path, metadata = ensure_monthly_panel(thread_prep=thread_prep)
     logging.getLogger(__name__).info(
         "Panel ready: %s (%d rows, %d subreddits)",
         csv_path,
@@ -194,7 +211,8 @@ def cmd_did() -> int:
     """Estimate DiD and event-study models from the monthly panel."""
     from src.did import run_did_analysis
 
-    result = run_did_analysis()
+    thread_prep = _parse_thread_prep_only_args("did")
+    result = run_did_analysis(thread_prep=thread_prep)
     logging.getLogger(__name__).info("Wrote %s", result.table_paths["summary"])
     return 0
 
@@ -203,7 +221,8 @@ def cmd_responsiveness() -> int:
     """Compute post-level and monthly responsiveness metrics."""
     from src.responsiveness import run_responsiveness_analysis
 
-    result = run_responsiveness_analysis()
+    thread_prep = _parse_thread_prep_only_args("responsiveness")
+    result = run_responsiveness_analysis(thread_prep=thread_prep)
     logging.getLogger(__name__).info("Wrote %s", result.table_paths["monthly"])
     return 0
 
@@ -212,7 +231,8 @@ def cmd_mechanisms() -> int:
     """Estimate moderator/mechanism models from panel structure."""
     from src.mechanisms import run_mechanisms_analysis
 
-    result = run_mechanisms_analysis()
+    thread_prep = _parse_thread_prep_only_args("mechanisms")
+    result = run_mechanisms_analysis(thread_prep=thread_prep)
     logging.getLogger(__name__).info("Wrote %s", result.table_paths["summary"])
     return 0
 
@@ -221,7 +241,8 @@ def cmd_ai_mentions() -> int:
     """Count GenAI mentions in comments and submissions."""
     from src.ai_mentions import run_ai_mentions_analysis
 
-    result = run_ai_mentions_analysis()
+    thread_prep = _parse_thread_prep_only_args("ai-mentions")
+    result = run_ai_mentions_analysis(thread_prep=thread_prep)
     logging.getLogger(__name__).info("Wrote %s", result.table_paths["monthly"])
     return 0
 
@@ -230,7 +251,8 @@ def cmd_content_metrics() -> int:
     """Compute simple content/effort/support proxy metrics."""
     from src.content_metrics import run_content_metrics_analysis
 
-    result = run_content_metrics_analysis()
+    thread_prep = _parse_thread_prep_only_args("content-metrics")
+    result = run_content_metrics_analysis(thread_prep=thread_prep)
     logging.getLogger(__name__).info("Wrote %s", result.table_paths["monthly"])
     return 0
 
@@ -239,7 +261,8 @@ def cmd_interactions() -> int:
     """Compute bond-vs-identity interaction structure metrics."""
     from src.interactions import run_interactions_analysis
 
-    result = run_interactions_analysis()
+    thread_prep = _parse_thread_prep_only_args("interactions")
+    result = run_interactions_analysis(thread_prep=thread_prep)
     logging.getLogger(__name__).info("Wrote %s", result.table_paths["monthly"])
     return 0
 
@@ -248,7 +271,8 @@ def cmd_wip() -> int:
     """Run the full WIP suite and write key-result summaries."""
     from src.wip import run_wip_suite
 
-    result = run_wip_suite()
+    thread_prep = _parse_thread_prep_only_args("wip")
+    result = run_wip_suite(thread_prep=thread_prep)
     logging.getLogger(__name__).info("Wrote %s", result.csv_path)
     logging.getLogger(__name__).info("Wrote %s", result.markdown_path)
     return 0
@@ -296,7 +320,8 @@ def cmd_discursivity() -> int:
         write_discursivity_csv,
     )
 
-    result = compute_discursivity()
+    thread_prep = _parse_thread_prep_only_args("discursivity")
+    result = compute_discursivity(thread_prep=thread_prep)
     if result.resolved_comments == 0:
         logging.getLogger(__name__).warning("No resolved comments — skipping outputs.")
         return 0
@@ -333,10 +358,11 @@ def cmd_resilience() -> int:
         write_resilience_stats_csv,
     )
 
+    thread_prep = _parse_thread_prep_only_args("resilience")
     disc = load_discursivity()
     if disc is None:
         logging.getLogger(__name__).info("Recomputing discursivity (no valid cache).")
-        disc = compute_discursivity()
+        disc = compute_discursivity(thread_prep=thread_prep)
         if disc.resolved_comments > 0:
             save_discursivity(
                 disc,
@@ -396,7 +422,8 @@ def cmd_helpers() -> int:
         write_helpers_type_summary_csv,
     )
 
-    result = compute_helpers(_discover_filtered_paths("comments"))
+    thread_prep = _parse_thread_prep_only_args("helpers")
+    result = compute_helpers(_discover_filtered_paths("comments"), thread_prep=thread_prep)
     if not result.cells:
         logging.getLogger(__name__).warning("No helper data — skipping.")
         return 0

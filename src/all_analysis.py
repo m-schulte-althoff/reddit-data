@@ -20,6 +20,7 @@ from src.mechanisms import run_mechanisms_analysis
 from src.panel import ensure_monthly_panel
 from src.resilience import compute_resilience
 from src.responsiveness import run_responsiveness_analysis
+from src.thread_prep import ThreadPrepConfig
 from src.wip import run_wip_suite
 
 SUMMARY_FILENAME = "summary.md"
@@ -43,7 +44,11 @@ class AllAnalysisArtifacts:
     sections: list[AnalysisSection]
 
 
-def allAnalysis(*, output_dir: Path | None = None) -> AllAnalysisArtifacts:
+def allAnalysis(
+    *,
+    output_dir: Path | None = None,
+    thread_prep: ThreadPrepConfig | None = None,
+) -> AllAnalysisArtifacts:
     """Run all analyses that depend on already-filtered data.
 
     This pipeline assumes filtered data already exists in ``data/processed/`` and
@@ -58,11 +63,32 @@ def allAnalysis(*, output_dir: Path | None = None) -> AllAnalysisArtifacts:
 
     sections: list[AnalysisSection] = []
     sections.append(run_describe_outputs(tables_dir=out_tables, figures_dir=out_figures))
-    sections.append(run_discursivity_outputs(tables_dir=out_tables, figures_dir=out_figures))
-    sections.append(run_helpers_outputs(tables_dir=out_tables, figures_dir=out_figures))
-    sections.append(run_resilience_outputs(tables_dir=out_tables, figures_dir=out_figures))
+    sections.append(
+        run_discursivity_outputs(
+            tables_dir=out_tables,
+            figures_dir=out_figures,
+            thread_prep=thread_prep,
+        ),
+    )
+    sections.append(
+        run_helpers_outputs(
+            tables_dir=out_tables,
+            figures_dir=out_figures,
+            thread_prep=thread_prep,
+        ),
+    )
+    sections.append(
+        run_resilience_outputs(
+            tables_dir=out_tables,
+            figures_dir=out_figures,
+            thread_prep=thread_prep,
+        ),
+    )
 
-    panel_csv_path, panel_metadata_path, _ = ensure_monthly_panel(tables_dir=out_tables)
+    panel_csv_path, panel_metadata_path, _ = ensure_monthly_panel(
+        tables_dir=out_tables,
+        thread_prep=thread_prep,
+    )
     sections.append(
         AnalysisSection(
             title="Panel",
@@ -72,7 +98,12 @@ def allAnalysis(*, output_dir: Path | None = None) -> AllAnalysisArtifacts:
         ),
     )
 
-    did = run_did_analysis(panel_path=panel_csv_path, tables_dir=out_tables, figures_dir=out_figures)
+    did = run_did_analysis(
+        panel_path=panel_csv_path,
+        tables_dir=out_tables,
+        figures_dir=out_figures,
+        thread_prep=thread_prep,
+    )
     sections.append(
         AnalysisSection(
             title="DiD and Event Study",
@@ -82,7 +113,11 @@ def allAnalysis(*, output_dir: Path | None = None) -> AllAnalysisArtifacts:
         ),
     )
 
-    responsiveness = run_responsiveness_analysis(tables_dir=out_tables, figures_dir=out_figures)
+    responsiveness = run_responsiveness_analysis(
+        tables_dir=out_tables,
+        figures_dir=out_figures,
+        thread_prep=thread_prep,
+    )
     sections.append(
         AnalysisSection(
             title="Responsiveness",
@@ -96,6 +131,7 @@ def allAnalysis(*, output_dir: Path | None = None) -> AllAnalysisArtifacts:
         panel_path=panel_csv_path,
         tables_dir=out_tables,
         figures_dir=out_figures,
+        thread_prep=thread_prep,
     )
     sections.append(
         AnalysisSection(
@@ -106,7 +142,11 @@ def allAnalysis(*, output_dir: Path | None = None) -> AllAnalysisArtifacts:
         ),
     )
 
-    ai_mentions = run_ai_mentions_analysis(tables_dir=out_tables, figures_dir=out_figures)
+    ai_mentions = run_ai_mentions_analysis(
+        tables_dir=out_tables,
+        figures_dir=out_figures,
+        thread_prep=thread_prep,
+    )
     sections.append(
         AnalysisSection(
             title="AI Mentions",
@@ -116,7 +156,11 @@ def allAnalysis(*, output_dir: Path | None = None) -> AllAnalysisArtifacts:
         ),
     )
 
-    content = run_content_metrics_analysis(tables_dir=out_tables, figures_dir=out_figures)
+    content = run_content_metrics_analysis(
+        tables_dir=out_tables,
+        figures_dir=out_figures,
+        thread_prep=thread_prep,
+    )
     sections.append(
         AnalysisSection(
             title="Content Metrics",
@@ -126,7 +170,11 @@ def allAnalysis(*, output_dir: Path | None = None) -> AllAnalysisArtifacts:
         ),
     )
 
-    interactions = run_interactions_analysis(tables_dir=out_tables, figures_dir=out_figures)
+    interactions = run_interactions_analysis(
+        tables_dir=out_tables,
+        figures_dir=out_figures,
+        thread_prep=thread_prep,
+    )
     sections.append(
         AnalysisSection(
             title="Interactions",
@@ -136,7 +184,11 @@ def allAnalysis(*, output_dir: Path | None = None) -> AllAnalysisArtifacts:
         ),
     )
 
-    wip = run_wip_suite(tables_dir=out_tables, figures_dir=out_figures)
+    wip = run_wip_suite(
+        tables_dir=out_tables,
+        figures_dir=out_figures,
+        thread_prep=thread_prep,
+    )
     sections.append(
         AnalysisSection(
             title="WIP Key Results",
@@ -158,9 +210,13 @@ def allAnalysis(*, output_dir: Path | None = None) -> AllAnalysisArtifacts:
     return AllAnalysisArtifacts(summary_path=summary_path, sections=sections)
 
 
-def run_all_analysis(*, output_dir: Path | None = None) -> AllAnalysisArtifacts:
+def run_all_analysis(
+    *,
+    output_dir: Path | None = None,
+    thread_prep: ThreadPrepConfig | None = None,
+) -> AllAnalysisArtifacts:
     """Snake-case alias for ``allAnalysis``."""
-    return allAnalysis(output_dir=output_dir)
+    return allAnalysis(output_dir=output_dir, thread_prep=thread_prep)
 
 
 def run_describe_outputs(*, tables_dir: Path, figures_dir: Path) -> AnalysisSection:
@@ -211,11 +267,24 @@ def run_describe_outputs(*, tables_dir: Path, figures_dir: Path) -> AnalysisSect
     )
 
 
-def run_discursivity_outputs(*, tables_dir: Path, figures_dir: Path) -> AnalysisSection:
+def run_discursivity_outputs(
+    *,
+    tables_dir: Path,
+    figures_dir: Path,
+    thread_prep: ThreadPrepConfig | None = None,
+) -> AnalysisSection:
     """Run discursivity outputs with cache persistence."""
     import views
 
-    result = compute_discursivity()
+    comment_paths = _discover_filtered_paths("comments")
+    submission_paths = _discover_filtered_paths("submissions")
+    result = load_discursivity(comment_paths, submission_paths, cache_dir=tables_dir)
+    if result is None:
+        result = compute_discursivity(
+            comment_paths=comment_paths,
+            submission_paths=submission_paths,
+            thread_prep=thread_prep,
+        )
     if result.resolved_comments == 0:
         return AnalysisSection(
             title="Discursivity",
@@ -226,8 +295,8 @@ def run_discursivity_outputs(*, tables_dir: Path, figures_dir: Path) -> Analysis
 
     save_discursivity(
         result,
-        comment_paths=_discover_filtered_paths("comments"),
-        submission_paths=_discover_filtered_paths("submissions"),
+        comment_paths=comment_paths,
+        submission_paths=submission_paths,
         out_dir=tables_dir,
     )
     with _override_view_dirs(tables_dir=tables_dir, figures_dir=figures_dir):
@@ -258,11 +327,19 @@ def run_discursivity_outputs(*, tables_dir: Path, figures_dir: Path) -> Analysis
     )
 
 
-def run_helpers_outputs(*, tables_dir: Path, figures_dir: Path) -> AnalysisSection:
+def run_helpers_outputs(
+    *,
+    tables_dir: Path,
+    figures_dir: Path,
+    thread_prep: ThreadPrepConfig | None = None,
+) -> AnalysisSection:
     """Run repeat-helper concentration outputs."""
     import views
 
-    result = compute_helpers(_discover_filtered_paths("comments"))
+    result = compute_helpers(
+        _discover_filtered_paths("comments"),
+        thread_prep=thread_prep,
+    )
     if not result.cells:
         return AnalysisSection(
             title="Helpers",
@@ -301,7 +378,12 @@ def run_helpers_outputs(*, tables_dir: Path, figures_dir: Path) -> AnalysisSecti
     )
 
 
-def run_resilience_outputs(*, tables_dir: Path, figures_dir: Path) -> AnalysisSection:
+def run_resilience_outputs(
+    *,
+    tables_dir: Path,
+    figures_dir: Path,
+    thread_prep: ThreadPrepConfig | None = None,
+) -> AnalysisSection:
     """Run resilience outputs using the local discursivity cache when valid."""
     import views
 
@@ -311,7 +393,7 @@ def run_resilience_outputs(*, tables_dir: Path, figures_dir: Path) -> AnalysisSe
         cache_dir=tables_dir,
     )
     if disc is None:
-        disc = compute_discursivity()
+        disc = compute_discursivity(thread_prep=thread_prep)
         if disc.resolved_comments > 0:
             save_discursivity(
                 disc,

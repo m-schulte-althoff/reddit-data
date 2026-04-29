@@ -26,6 +26,7 @@ from __future__ import annotations
 import io
 import logging
 import math
+import sqlite3
 from collections import Counter
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -38,8 +39,11 @@ from src.config import (
     PROCESSED_DIR,
     ZSTD_MAX_WINDOW_SIZE,
 )
+from src.thread_prep import ThreadPrepConfig, prepare_thread_partitions
 
 log = logging.getLogger(__name__)
+_ORJSON_LOADS = getattr(orjson, "loads")
+_ORJSON_JSON_ERROR = getattr(orjson, "JSONDecodeError", ValueError)
 
 
 # ── Community-type classification ────────────────────────────────────────────
@@ -255,7 +259,7 @@ def _extract_created_utc(record: dict) -> int | None:
         return None
     try:
         return int(float(value)) if isinstance(value, str) else int(value)
-    except Exception:
+    except (TypeError, ValueError, OverflowError):
         return None
 
 
@@ -269,8 +273,8 @@ def _stream_zst(path: Path):  # noqa: ANN201
                 if not line.strip():
                     continue
                 try:
-                    yield orjson.loads(line)
-                except orjson.JSONDecodeError:
+                    yield _ORJSON_LOADS(line)
+                except _ORJSON_JSON_ERROR:
                     continue
 
 
@@ -282,6 +286,8 @@ def _discover_filtered_paths(kind: str) -> list[Path]:
 
 def compute_helpers(
     comment_paths: list[Path] | None = None,
+    *,
+    thread_prep: ThreadPrepConfig | None = None,
 ) -> HelpersResult:
     """Stream filtered comments and compute per-author concentration metrics.
 
@@ -292,6 +298,9 @@ def compute_helpers(
     """
     if comment_paths is None:
         comment_paths = _discover_filtered_paths("comments")
+
+    if thread_prep is not None and thread_prep.enabled:
+        return _compute_helpers_partitioned(comment_paths, thread_prep=thread_prep)
 
     # Accumulate per-(sub, month) → Counter[author].
     author_counts: dict[tuple[str, str], Counter[str]] = {}
@@ -320,6 +329,154 @@ def compute_helpers(
         len(result.sorted_subreddits()),
     )
     return result
+
+
+def _compute_helpers_partitioned(
+    comment_paths: list[Path],
+    *,
+    thread_prep: ThreadPrepConfig,
+) -> HelpersResult:
+    """Compute helper concentration from submission-hash shards via SQLite."""
+    partitioned = prepare_thread_partitions(comment_paths, [], config=thread_prep)
+    sqlite_path = partitioned.root_dir / "helpers-author-counts.sqlite"
+    if sqlite_path.exists():
+        sqlite_path.unlink()
+
+    conn = sqlite3.connect(sqlite_path)
+    conn.row_factory = sqlite3.Row
+    conn.execute(
+        """
+        CREATE TABLE author_counts (
+            subreddit TEXT NOT NULL,
+            month TEXT NOT NULL,
+            author TEXT NOT NULL,
+            comment_count INTEGER NOT NULL DEFAULT 0,
+            PRIMARY KEY (subreddit, month, author)
+        )
+        """,
+    )
+
+    for path in partitioned.comment_partitions:
+        local_counts: Counter[tuple[str, str, str]] = Counter()
+        log.info("Aggregating helper counts from %s …", path.name)
+        for obj in _stream_zst(path):
+            author = str(obj.get("author", ""))
+            if not author or author in ("[deleted]", "[removed]"):
+                continue
+            sub: str = obj.get("subreddit", "unknown")
+            ts = _extract_created_utc(obj)
+            month = _epoch_to_month(ts) if ts is not None else "unknown"
+            local_counts[(sub, month, author)] += 1
+
+        if local_counts:
+            with conn:
+                conn.executemany(
+                    """
+                    INSERT INTO author_counts (subreddit, month, author, comment_count)
+                    VALUES (?, ?, ?, ?)
+                    ON CONFLICT(subreddit, month, author) DO UPDATE SET
+                        comment_count = author_counts.comment_count + excluded.comment_count
+                    """,
+                    [(*key, count) for key, count in local_counts.items()],
+                )
+
+    result = HelpersResult()
+    cell_rows = conn.execute(
+        """
+        SELECT subreddit, month, COUNT(*) AS unique_authors, SUM(comment_count) AS total_comments
+        FROM author_counts
+        GROUP BY subreddit, month
+        ORDER BY subreddit, month
+        """,
+    ).fetchall()
+    for row in cell_rows:
+        subreddit = str(row["subreddit"])
+        month = str(row["month"])
+        result.cells[(subreddit, month)] = _compute_metrics_from_sqlite_cell(
+            conn,
+            subreddit,
+            month,
+            total_comments=int(row["total_comments"]),
+            unique_authors=int(row["unique_authors"]),
+        )
+
+    conn.close()
+    log.info(
+        "Helpers (partitioned): %d (subreddit, month) cells across %d subreddits",
+        len(result.cells),
+        len(result.sorted_subreddits()),
+    )
+    return result
+
+
+def _compute_metrics_from_sqlite_cell(
+    conn: sqlite3.Connection,
+    subreddit: str,
+    month: str,
+    *,
+    total_comments: int,
+    unique_authors: int,
+) -> ConcentrationMetrics:
+    """Compute concentration metrics for one cell from a SQLite counts table."""
+    metrics = ConcentrationMetrics(
+        total_comments=total_comments,
+        unique_authors=unique_authors,
+    )
+    if total_comments == 0 or unique_authors == 0:
+        return metrics
+
+    top1_sum = 0
+    top5_sum = 0
+    pct1_sum = 0
+    pct9_sum = 0
+    hhi = 0.0
+    n1 = max(1, math.ceil(unique_authors * 0.01))
+    n10 = max(n1 + 1, math.ceil(unique_authors * 0.10))
+
+    desc_rows = conn.execute(
+        """
+        SELECT comment_count
+        FROM author_counts
+        WHERE subreddit = ? AND month = ?
+        ORDER BY comment_count DESC
+        """,
+        (subreddit, month),
+    )
+    for index, row in enumerate(desc_rows, start=1):
+        count = int(row[0])
+        if index == 1:
+            top1_sum = count
+        if index <= 5:
+            top5_sum += count
+        if index <= n1:
+            pct1_sum += count
+        elif index <= n10:
+            pct9_sum += count
+        hhi += (count / total_comments) ** 2
+
+    weighted_sum = 0.0
+    asc_rows = conn.execute(
+        """
+        SELECT comment_count
+        FROM author_counts
+        WHERE subreddit = ? AND month = ?
+        ORDER BY comment_count ASC
+        """,
+        (subreddit, month),
+    )
+    for index, row in enumerate(asc_rows, start=1):
+        count = int(row[0])
+        weighted_sum += (2 * index - unique_authors - 1) * count
+
+    metrics.top1_share = top1_sum / total_comments
+    metrics.top5_share = top5_sum / total_comments
+    metrics.hhi = hhi
+    metrics.gini = weighted_sum / (unique_authors * total_comments)
+    metrics.pct1_share = pct1_sum / total_comments
+    metrics.pct9_share = pct9_sum / total_comments
+    pct90_share = 1.0 - metrics.pct1_share - metrics.pct9_share
+    metrics.pct90_share = 0.0 if abs(pct90_share) < 1e-12 else max(0.0, pct90_share)
+    return metrics
 
 
 # ── Moderation analysis ──────────────────────────────────────────────────────

@@ -16,6 +16,7 @@ from src.helpers import (
     classify_subreddit,
     compute_helpers,
 )
+from src.thread_prep import normalize_thread_prep_config
 from tests.conftest import write_zst_jsonl
 
 
@@ -192,6 +193,21 @@ class TestComputeHelpers:
         subs = result.sorted_subreddits()
         assert "Depression" in subs
         assert "AskReddit" in subs
+
+    def test_partitioned_matches_default(self, tmp_path: Path):
+        records = (
+            _make_comments("AskReddit", {"alice": 8, "bob": 2}, ts=1654100000)
+            + _make_comments("Depression", {"carol": 4, "dave": 1}, ts=1656700000)
+        )
+        p = tmp_path / "test.jsonl.zst"
+        write_zst_jsonl(p, records)
+        config = normalize_thread_prep_config(2, cache_dir=tmp_path / "cache")
+        assert config is not None
+
+        default_result = compute_helpers([p])
+        partitioned_result = compute_helpers([p], thread_prep=config)
+
+        assert partitioned_result.cells == default_result.cells
 
 
 # ── analyse_helpers ──────────────────────────────────────────────────────────

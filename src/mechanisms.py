@@ -18,6 +18,7 @@ from src.config import FIGURES_DIR, TABLES_DIR
 from src.did import BASELINE_CUTOFF
 from src.panel import ensure_monthly_panel
 from src.responsiveness import run_responsiveness_analysis
+from src.thread_prep import ThreadPrepConfig
 
 log = logging.getLogger(__name__)
 
@@ -124,12 +125,19 @@ def run_mechanisms_analysis(
     *,
     tables_dir: Path | None = None,
     figures_dir: Path | None = None,
+    thread_prep: ThreadPrepConfig | None = None,
 ) -> MechanismsArtifacts:
     """Run moderator regressions and write summary figures."""
     if panel_path is None:
-        panel_path, _, _ = ensure_monthly_panel()
+        if thread_prep is None:
+            panel_path, _, _ = ensure_monthly_panel()
+        else:
+            panel_path, _, _ = ensure_monthly_panel(thread_prep=thread_prep)
     panel = pd.read_csv(panel_path)
-    responsiveness = run_responsiveness_analysis()
+    if thread_prep is None:
+        responsiveness = run_responsiveness_analysis()
+    else:
+        responsiveness = run_responsiveness_analysis(thread_prep=thread_prep)
     merged_panel = build_moderation_panel(panel, responsiveness.monthly)
 
     out_tables = tables_dir or TABLES_DIR

@@ -20,6 +20,7 @@ import pandas as pd
 from src.config import FIGURES_DIR, TABLES_DIR
 from src.io_utils import discover_filtered_paths, epoch_to_month, extract_created_utc, fingerprint_hash, fingerprint_paths, is_deleted_removed, stream_zst
 from src.panel import ensure_monthly_panel
+from src.thread_prep import ThreadPrepConfig
 
 log = logging.getLogger(__name__)
 
@@ -126,6 +127,7 @@ def run_content_metrics_analysis(
     *,
     tables_dir: Path | None = None,
     figures_dir: Path | None = None,
+    thread_prep: ThreadPrepConfig | None = None,
 ) -> ContentMetricsArtifacts:
     """Compute and cache simple monthly content metrics."""
     resolved_comment_paths = comment_paths or discover_filtered_paths("comments")
@@ -164,6 +166,7 @@ def run_content_metrics_analysis(
         comment_paths=resolved_comment_paths,
         submission_paths=resolved_submission_paths,
         tables_dir=out_tables,
+        thread_prep=thread_prep,
     )
     panel = pd.read_csv(panel_path)
     monthly = panel[["subreddit", "month", "community_type", "comments", "submissions"]].copy()

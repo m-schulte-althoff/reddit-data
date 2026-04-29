@@ -34,8 +34,11 @@ from src.config import (
     TABLES_DIR,
     ZSTD_MAX_WINDOW_SIZE,
 )
+from src.thread_prep import ThreadPrepConfig, prepare_thread_partitions
 
 log = logging.getLogger(__name__)
+_ORJSON_LOADS = getattr(orjson, "loads")
+_ORJSON_JSON_ERROR = getattr(orjson, "JSONDecodeError", ValueError)
 
 
 # ── Data model ───────────────────────────────────────────────────────────────
@@ -173,7 +176,7 @@ def _extract_created_utc(record: dict) -> int | None:
         return None
     try:
         return int(float(value)) if isinstance(value, str) else int(value)
-    except Exception:
+    except (TypeError, ValueError, OverflowError):
         return None
 
 
@@ -187,8 +190,8 @@ def _stream_zst(path: Path):  # noqa: ANN201
                 if not line.strip():
                     continue
                 try:
-                    yield orjson.loads(line)
-                except orjson.JSONDecodeError:
+                    yield _ORJSON_LOADS(line)
+                except _ORJSON_JSON_ERROR:
                     continue
 
 
@@ -216,6 +219,7 @@ class _PendingComment:
 def compute_discursivity(
     comment_paths: list[Path] | None = None,
     submission_paths: list[Path] | None = None,
+    thread_prep: ThreadPrepConfig | None = None,
 ) -> DiscursivityResult:
     """Compute comment-depth statistics from filtered data.
 
@@ -245,10 +249,54 @@ def compute_discursivity(
             result.submission_counts[(sub, month)] += 1
 
     # 2. Stream comments — single-pass depth resolution with cascade.
+    if thread_prep is not None and thread_prep.enabled:
+        partitioned = prepare_thread_partitions(
+            comment_paths,
+            submission_paths,
+            config=thread_prep,
+        )
+        _stream_comment_depths(
+            partitioned.comment_partitions,
+            result,
+            reset_state_per_path=True,
+        )
+    else:
+        _stream_comment_depths(comment_paths, result, reset_state_per_path=False)
+
+    result.unresolved_comments = result.total_comments - result.resolved_comments - result.parse_errors
+    if result.unresolved_comments > 0:
+        log.warning(
+            "%d comments (%.1f%%) unresolved — parent outside filtered set",
+            result.unresolved_comments,
+            100 * result.unresolved_comments / result.total_comments
+            if result.total_comments
+            else 0,
+        )
+
+    log.info(
+        "Discursivity: %d resolved, %d unresolved, %d parse errors, %d buckets",
+        result.resolved_comments,
+        result.unresolved_comments,
+        result.parse_errors,
+        len(result.buckets),
+    )
+    return result
+
+
+def _stream_comment_depths(
+    comment_paths: list[Path],
+    result: DiscursivityResult,
+    *,
+    reset_state_per_path: bool,
+) -> None:
+    """Stream comment paths and update the running discursivity result."""
     depth_map: dict[str, int] = {}
     pending: dict[str, list[_PendingComment]] = {}
 
     for path in comment_paths:
+        if reset_state_per_path:
+            depth_map = {}
+            pending = {}
         log.info("Computing comment depths from %s …", path.name)
         for obj in _stream_zst(path):
             result.total_comments += 1
@@ -281,25 +329,6 @@ def compute_discursivity(
             result.resolved_comments += 1
             result.get_bucket(sub, month).add(depth)
             _cascade_resolve(comment_id, depth, depth_map, pending, result)
-
-    result.unresolved_comments = result.total_comments - result.resolved_comments - result.parse_errors
-    if result.unresolved_comments > 0:
-        log.warning(
-            "%d comments (%.1f%%) unresolved — parent outside filtered set",
-            result.unresolved_comments,
-            100 * result.unresolved_comments / result.total_comments
-            if result.total_comments
-            else 0,
-        )
-
-    log.info(
-        "Discursivity: %d resolved, %d unresolved, %d parse errors, %d buckets",
-        result.resolved_comments,
-        result.unresolved_comments,
-        result.parse_errors,
-        len(result.buckets),
-    )
-    return result
 
 
 def _cascade_resolve(

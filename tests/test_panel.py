@@ -5,6 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from src.panel import build_monthly_panel, ensure_monthly_panel, load_panel_cache
+from src.thread_prep import normalize_thread_prep_config
 from tests.conftest import write_zst_jsonl
 
 
@@ -229,3 +230,23 @@ def test_panel_cache_fingerprint_invalidates_after_input_change(tmp_path: Path) 
         [submissions_path],
         tables_dir=tables_dir,
     ) is None
+
+
+def test_build_monthly_panel_partitioned_matches_default(tmp_path: Path) -> None:
+    comments_path, submissions_path, tables_dir = _make_processed(tmp_path)
+    config = normalize_thread_prep_config(2, cache_dir=tmp_path / "cache")
+    assert config is not None
+
+    default_result = build_monthly_panel(
+        comment_paths=[comments_path],
+        submission_paths=[submissions_path],
+        cache_dir=tables_dir,
+    )
+    partitioned_result = build_monthly_panel(
+        comment_paths=[comments_path],
+        submission_paths=[submissions_path],
+        cache_dir=tmp_path / "tables-partitioned",
+        thread_prep=config,
+    )
+
+    assert [row.to_dict() for row in partitioned_result.rows] == [row.to_dict() for row in default_result.rows]

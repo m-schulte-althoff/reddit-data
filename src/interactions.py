@@ -27,6 +27,7 @@ from src.io_utils import (
     iter_month_range,
     stream_zst,
 )
+from src.thread_prep import ThreadPrepConfig, prepare_thread_partitions
 
 log = logging.getLogger(__name__)
 
@@ -74,6 +75,7 @@ def run_interactions_analysis(
     tables_dir: Path | None = None,
     figures_dir: Path | None = None,
     cache_dir: Path | None = None,
+    thread_prep: ThreadPrepConfig | None = None,
 ) -> InteractionsArtifacts:
     """Compute monthly bond-vs-identity interaction metrics."""
     resolved_comment_paths = comment_paths or discover_filtered_paths("comments")
@@ -106,8 +108,20 @@ def run_interactions_analysis(
     if sqlite_path.exists():
         sqlite_path.unlink()
 
-    submissions = _load_submissions_into_sqlite(sqlite_path, resolved_submission_paths)
-    _stream_comments_into_sqlite(sqlite_path, submissions, resolved_comment_paths)
+    if thread_prep is not None and thread_prep.enabled:
+        partitioned = prepare_thread_partitions(
+            resolved_comment_paths,
+            resolved_submission_paths,
+            config=thread_prep,
+        )
+        _run_partitioned_sqlite_pipeline(
+            sqlite_path,
+            partitioned.submission_partitions,
+            partitioned.comment_partitions,
+        )
+    else:
+        submissions = _load_submissions_into_sqlite(sqlite_path, resolved_submission_paths)
+        _stream_comments_into_sqlite(sqlite_path, submissions, resolved_comment_paths)
     monthly = _build_monthly_frame(sqlite_path)
     monthly.to_csv(table_paths["monthly"], index=False)
     _plot_outputs(monthly, figure_paths)
@@ -196,7 +210,7 @@ def _connect(sqlite_path: Path) -> sqlite3.Connection:
 def _init_schema(conn: sqlite3.Connection) -> None:
     conn.executescript(
         """
-        CREATE TABLE submissions (
+        CREATE TABLE IF NOT EXISTS submissions (
             submission_id TEXT PRIMARY KEY,
             subreddit TEXT NOT NULL,
             month TEXT NOT NULL,
@@ -204,7 +218,7 @@ def _init_schema(conn: sqlite3.Connection) -> None:
             created_utc INTEGER NOT NULL
         );
 
-        CREATE TABLE post_metrics (
+        CREATE TABLE IF NOT EXISTS post_metrics (
             submission_id TEXT PRIMARY KEY,
             subreddit TEXT NOT NULL,
             month TEXT NOT NULL,
@@ -215,7 +229,7 @@ def _init_schema(conn: sqlite3.Connection) -> None:
             max_depth INTEGER NOT NULL DEFAULT 0
         );
 
-        CREATE TABLE helper_counts (
+        CREATE TABLE IF NOT EXISTS helper_counts (
             submission_id TEXT NOT NULL,
             commenter TEXT NOT NULL,
             is_non_op INTEGER NOT NULL,
@@ -223,7 +237,7 @@ def _init_schema(conn: sqlite3.Connection) -> None:
             PRIMARY KEY (submission_id, commenter)
         );
 
-        CREATE TABLE author_activity (
+        CREATE TABLE IF NOT EXISTS author_activity (
             subreddit TEXT NOT NULL,
             month TEXT NOT NULL,
             author TEXT NOT NULL,
@@ -231,7 +245,7 @@ def _init_schema(conn: sqlite3.Connection) -> None:
             PRIMARY KEY (subreddit, month, author)
         );
 
-        CREATE TABLE reply_edges (
+        CREATE TABLE IF NOT EXISTS reply_edges (
             subreddit TEXT NOT NULL,
             month TEXT NOT NULL,
             source_author TEXT NOT NULL,
@@ -261,6 +275,21 @@ def _load_submissions_into_sqlite(
     submission_rows: list[tuple[str, str, str, str, int]] = []
     post_rows: list[tuple[str, str, str, str]] = []
 
+    def flush_rows() -> None:
+        if not submission_rows:
+            return
+        with conn:
+            conn.executemany(
+                "INSERT INTO submissions (submission_id, subreddit, month, author, created_utc) VALUES (?, ?, ?, ?, ?)",
+                submission_rows,
+            )
+            conn.executemany(
+                "INSERT INTO post_metrics (submission_id, subreddit, month, author) VALUES (?, ?, ?, ?)",
+                post_rows,
+            )
+        submission_rows.clear()
+        post_rows.clear()
+
     with conn:
         for path in submission_paths:
             log.info("Loading interaction submission metadata from %s …", path.name)
@@ -285,18 +314,26 @@ def _load_submissions_into_sqlite(
                 valid_author = _valid_author(author)
                 if valid_author is not None:
                     _record_author_activity(conn, subreddit, month, valid_author)
+                if len(submission_rows) >= 100_000:
+                    flush_rows()
 
-        conn.executemany(
-            "INSERT INTO submissions (submission_id, subreddit, month, author, created_utc) VALUES (?, ?, ?, ?, ?)",
-            submission_rows,
-        )
-        conn.executemany(
-            "INSERT INTO post_metrics (submission_id, subreddit, month, author) VALUES (?, ?, ?, ?)",
-            post_rows,
-        )
+        flush_rows()
 
     conn.close()
     return submissions
+
+
+def _run_partitioned_sqlite_pipeline(
+    sqlite_path: Path,
+    submission_partitions: list[Path],
+    comment_partitions: list[Path],
+) -> None:
+    if len(submission_partitions) != len(comment_partitions):
+        raise ValueError("submission and comment partitions must have the same length")
+
+    for submission_partition, comment_partition in zip(submission_partitions, comment_partitions, strict=True):
+        submissions = _load_submissions_into_sqlite(sqlite_path, [submission_partition])
+        _stream_comments_into_sqlite(sqlite_path, submissions, [comment_partition])
 
 
 def _stream_comments_into_sqlite(
@@ -446,7 +483,11 @@ def _resolve_comment(
         (comment_id, submission_id, subreddit, edge_month, author, depth),
     ]
     while stack:
-        parent_comment_id, parent_submission_id, parent_subreddit, _, resolved_author, resolved_depth = stack.pop()
+        resolved = stack.pop()
+        parent_comment_id = resolved[0]
+        parent_subreddit = resolved[2]
+        resolved_author = resolved[4]
+        resolved_depth = resolved[5]
         for child in pending.pop(parent_comment_id, []):
             child_depth = resolved_depth + 1
             comment_state[child.comment_id] = (child.submission_id, child.author, child_depth)

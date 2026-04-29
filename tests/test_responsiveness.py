@@ -4,7 +4,10 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pandas as pd
+
 from src.responsiveness import load_responsiveness_cache, run_responsiveness_analysis
+from src.thread_prep import normalize_thread_prep_config
 from tests.conftest import write_zst_jsonl
 
 
@@ -157,3 +160,28 @@ def test_responsiveness_cache_invalidates_after_input_change(tmp_path: Path) -> 
         tables_dir=tables_dir,
         figures_dir=figures_dir,
     ) is None
+
+
+def test_run_responsiveness_analysis_partitioned_matches_default(tmp_path: Path) -> None:
+    comments_path, submissions_path, tables_dir, figures_dir, cache_dir = _make_processed(tmp_path)
+    config = normalize_thread_prep_config(2, cache_dir=tmp_path / "thread-prep-cache")
+    assert config is not None
+
+    default_result = run_responsiveness_analysis(
+        comment_paths=[comments_path],
+        submission_paths=[submissions_path],
+        tables_dir=tables_dir,
+        figures_dir=figures_dir,
+        cache_dir=cache_dir,
+    )
+    partitioned_result = run_responsiveness_analysis(
+        comment_paths=[comments_path],
+        submission_paths=[submissions_path],
+        tables_dir=tmp_path / "tables-partitioned",
+        figures_dir=tmp_path / "figures-partitioned",
+        cache_dir=tmp_path / "cache-partitioned",
+        thread_prep=config,
+    )
+
+    pd.testing.assert_frame_equal(partitioned_result.posts, default_result.posts)
+    pd.testing.assert_frame_equal(partitioned_result.monthly, default_result.monthly)

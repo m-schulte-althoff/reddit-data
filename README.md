@@ -185,6 +185,24 @@ uv run python3 main.py sample
 
 All outputs are deterministic (fixed random seed, stable sorting).
 
+### Optional low-memory thread prep
+
+For large filtered corpora, the thread-heavy commands can first shard comments
+and submissions by `submission_id` hash and then process one shard at a time.
+Enable that path with `--thread-prep-partitions N`.
+
+Examples:
+
+```bash
+uv run python3 main.py all-analysis --thread-prep-partitions 64
+uv run python3 main.py panel --thread-prep-partitions 64
+uv run python3 main.py responsiveness --thread-prep-partitions 64
+uv run python3 main.py interactions --thread-prep-partitions 64
+```
+
+The same flag is also accepted by `did`, `mechanisms`, `ai-mentions`,
+`content-metrics`, `wip`, `discursivity`, `resilience`, and `helpers`.
+
 ### All Analysis (filtered data already available)
 
 If `data/processed/` already contains the filtered `.zst` files, the

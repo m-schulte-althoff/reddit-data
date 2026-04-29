@@ -16,6 +16,7 @@ from src.discursivity import (
     load_discursivity,
     save_discursivity,
 )
+from src.thread_prep import normalize_thread_prep_config
 
 
 # ── Sample data with a known comment tree ────────────────────────────────────
@@ -250,6 +251,25 @@ def test_compute_discursivity_out_of_order(tmp_path: Path) -> None:
     bucket = result.buckets[("test", "2022-06")]
     assert bucket.depth_histogram[1] == 1
     assert bucket.depth_histogram[2] == 1
+
+
+def test_compute_discursivity_partitioned_matches_default(tmp_path: Path) -> None:
+    cp, sp = _make_processed(tmp_path)
+    config = normalize_thread_prep_config(2, cache_dir=tmp_path / "cache")
+    assert config is not None
+
+    unpartitioned = compute_discursivity(comment_paths=[cp], submission_paths=[sp])
+    partitioned = compute_discursivity(
+        comment_paths=[cp],
+        submission_paths=[sp],
+        thread_prep=config,
+    )
+
+    assert partitioned.total_comments == unpartitioned.total_comments
+    assert partitioned.resolved_comments == unpartitioned.resolved_comments
+    assert partitioned.unresolved_comments == unpartitioned.unresolved_comments
+    assert partitioned.submission_counts == unpartitioned.submission_counts
+    assert partitioned.to_dict() == unpartitioned.to_dict()
 
 
 # ── View tests ───────────────────────────────────────────────────────────────

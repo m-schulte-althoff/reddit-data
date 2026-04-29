@@ -16,6 +16,7 @@ from src.interactions import run_interactions_analysis
 from src.mechanisms import run_mechanisms_analysis
 from src.panel import ensure_monthly_panel
 from src.responsiveness import run_responsiveness_analysis
+from src.thread_prep import ThreadPrepConfig
 
 WIP_KEY_RESULTS_CSV = "wip-key-results.csv"
 WIP_KEY_RESULTS_MD = "wip-key-results.md"
@@ -34,6 +35,7 @@ def run_wip_suite(
     *,
     tables_dir: Path | None = None,
     figures_dir: Path | None = None,
+    thread_prep: ThreadPrepConfig | None = None,
 ) -> WipArtifacts:
     """Run the main WIP suite and produce concise key-result outputs."""
     out_tables = tables_dir or TABLES_DIR
@@ -41,14 +43,43 @@ def run_wip_suite(
     out_tables.mkdir(parents=True, exist_ok=True)
     out_figures.mkdir(parents=True, exist_ok=True)
 
-    panel_path, metadata_path, panel_metadata = ensure_monthly_panel(tables_dir=out_tables)
+    panel_path, _, panel_metadata = ensure_monthly_panel(
+        tables_dir=out_tables,
+        thread_prep=thread_prep,
+    )
     panel = pd.read_csv(panel_path)
-    did = run_did_analysis(panel_path=panel_path, tables_dir=out_tables, figures_dir=out_figures)
-    responsiveness = run_responsiveness_analysis(tables_dir=out_tables, figures_dir=out_figures)
-    mechanisms = run_mechanisms_analysis(panel_path=panel_path, tables_dir=out_tables, figures_dir=out_figures)
-    ai_mentions = run_ai_mentions_analysis(tables_dir=out_tables, figures_dir=out_figures)
-    content = run_content_metrics_analysis(tables_dir=out_tables, figures_dir=out_figures)
-    interactions = run_interactions_analysis(tables_dir=out_tables, figures_dir=out_figures)
+    did = run_did_analysis(
+        panel_path=panel_path,
+        tables_dir=out_tables,
+        figures_dir=out_figures,
+        thread_prep=thread_prep,
+    )
+    responsiveness = run_responsiveness_analysis(
+        tables_dir=out_tables,
+        figures_dir=out_figures,
+        thread_prep=thread_prep,
+    )
+    mechanisms = run_mechanisms_analysis(
+        panel_path=panel_path,
+        tables_dir=out_tables,
+        figures_dir=out_figures,
+        thread_prep=thread_prep,
+    )
+    ai_mentions = run_ai_mentions_analysis(
+        tables_dir=out_tables,
+        figures_dir=out_figures,
+        thread_prep=thread_prep,
+    )
+    content = run_content_metrics_analysis(
+        tables_dir=out_tables,
+        figures_dir=out_figures,
+        thread_prep=thread_prep,
+    )
+    interactions = run_interactions_analysis(
+        tables_dir=out_tables,
+        figures_dir=out_figures,
+        thread_prep=thread_prep,
+    )
 
     summary_table = _build_key_results_table(
         panel,

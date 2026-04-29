@@ -17,6 +17,7 @@ import statsmodels.formula.api as smf
 from src.config import FIGURES_DIR, TABLES_DIR
 from src.io_utils import months_since
 from src.panel import ensure_monthly_panel
+from src.thread_prep import ThreadPrepConfig
 
 log = logging.getLogger(__name__)
 
@@ -47,10 +48,14 @@ class DidAnalysisArtifacts:
     figure_paths: dict[str, Path]
 
 
-def load_panel_dataframe(panel_path: Path | None = None) -> pd.DataFrame:
+def load_panel_dataframe(
+    panel_path: Path | None = None,
+    *,
+    thread_prep: ThreadPrepConfig | None = None,
+) -> pd.DataFrame:
     """Load the monthly panel, building it first when necessary."""
     if panel_path is None:
-        panel_path, _, _ = ensure_monthly_panel()
+        panel_path, _, _ = ensure_monthly_panel(thread_prep=thread_prep)
 
     frame = pd.read_csv(panel_path)
     frame = frame.sort_values(["subreddit", "month"], kind="stable").reset_index(drop=True)
@@ -242,9 +247,10 @@ def run_did_analysis(
     *,
     tables_dir: Path | None = None,
     figures_dir: Path | None = None,
+    thread_prep: ThreadPrepConfig | None = None,
 ) -> DidAnalysisArtifacts:
     """Run the full DiD and event-study suite and write tables/figures."""
-    panel = load_panel_dataframe(panel_path)
+    panel = load_panel_dataframe(panel_path, thread_prep=thread_prep)
     out_tables = tables_dir or TABLES_DIR
     out_figures = figures_dir or FIGURES_DIR
     out_tables.mkdir(parents=True, exist_ok=True)
