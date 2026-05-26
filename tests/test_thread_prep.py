@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import zlib
 from pathlib import Path
 
 from src.thread_prep import normalize_thread_prep_config, prepare_thread_partitions
@@ -67,7 +68,7 @@ def test_normalize_thread_prep_config_disables_single_partition() -> None:
 
 def test_prepare_thread_partitions_keeps_each_submission_in_one_shard(tmp_path: Path) -> None:
     comments_path, submissions_path = _make_processed(tmp_path)
-    config = normalize_thread_prep_config(2, cache_dir=tmp_path / "cache")
+    config = normalize_thread_prep_config(4, cache_dir=tmp_path / "cache")
     assert config is not None
 
     artifacts = prepare_thread_partitions(
@@ -81,8 +82,10 @@ def test_prepare_thread_partitions_keeps_each_submission_in_one_shard(tmp_path: 
         for record in read_zst_jsonl(shard_path):
             submission_shards[str(record["id"])] = index
 
-    assert submission_shards == {"s1": submission_shards["s1"], "s2": submission_shards["s2"]}
-    assert len({submission_shards["s1"], submission_shards["s2"]}) >= 1
+    assert submission_shards == {
+        "s1": zlib.crc32(b"s1") % config.partitions,
+        "s2": zlib.crc32(b"s2") % config.partitions,
+    }
 
     comment_shards: dict[str, int] = {}
     for index, shard_path in enumerate(artifacts.comment_partitions):

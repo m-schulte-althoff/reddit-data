@@ -26,7 +26,7 @@ from src.io_utils import fingerprint_hash, fingerprint_paths, stream_zst
 log = logging.getLogger(__name__)
 _ORJSON_DUMPS = getattr(orjson, "dumps")
 
-THREAD_PREP_CACHE_VERSION = 1
+THREAD_PREP_CACHE_VERSION = 2
 _MANIFEST_FILENAME = "thread-prep-manifest.json"
 
 
@@ -184,15 +184,19 @@ def _write_partition_files(source_paths: list[Path], partition_paths: list[Path]
     if not partition_paths:
         return
 
-    compressor = zstd.ZstdCompressor(level=OUTPUT_ZSTD_LEVEL)
     written = [0 for _ in partition_paths]
     skipped = 0
 
     with ExitStack() as stack:
+        compressors: list[zstd.ZstdCompressor] = []
         writers = []
         for path in partition_paths:
             path.parent.mkdir(parents=True, exist_ok=True)
             fout = stack.enter_context(path.open("wb"))
+            # Each shard needs its own compression context; sharing one compressor
+            # across interleaved writers can produce unreadable or misrouted output.
+            compressor = zstd.ZstdCompressor(level=OUTPUT_ZSTD_LEVEL)
+            compressors.append(compressor)
             writers.append(stack.enter_context(compressor.stream_writer(fout, closefd=False)))
 
         for source_path in source_paths:
