@@ -29,6 +29,7 @@ import re
 import time
 from pathlib import Path
 
+import orjson
 import zstandard as zstd
 
 from src.config import (
@@ -43,6 +44,10 @@ log = logging.getLogger(__name__)
 
 # Byte-level regex to extract subreddit_name_prefixed without full JSON parse.
 _SUB_PREFIX_RE = re.compile(rb'"subreddit_name_prefixed"\s*:\s*"([^"]+)"')
+
+# Byte-level regex for subreddit as a fallback prefilter. This is only a cheap
+# candidate check; the final decision is made from the parsed top-level object.
+_SUB_RE = re.compile(rb'"subreddit"\s*:\s*"([^"]+)"')
 
 # Byte-level regex for created_utc (reused from analysis.py pattern).
 _TS_RE = re.compile(rb'"created_utc"\s*:\s*"?(\d+)"?')
@@ -68,6 +73,53 @@ def load_subreddit_list(path: Path) -> set[str]:
 def _subreddit_set_to_bytes(subreddits: set[str]) -> set[bytes]:
     """Convert subreddit name set to bytes for matching against raw lines."""
     return {s.encode("utf-8") for s in subreddits}
+
+
+def _normalize_prefixed_subreddit(value: object) -> str | None:
+    """Normalize a subreddit value to lowercase ``r/name`` form."""
+    if not isinstance(value, str):
+        return None
+    normalized = value.replace("\\/", "/").strip().lower()
+    if not normalized:
+        return None
+    if normalized.startswith("r/"):
+        return normalized
+    return f"r/{normalized}"
+
+
+def _line_may_match_subreddit(line: bytes, subreddits_bytes: set[bytes]) -> bool:
+    """Return whether a raw JSON line contains any candidate subreddit value."""
+    for match in _SUB_PREFIX_RE.finditer(line):
+        sub_value = match.group(1).replace(b"\\/", b"/").lower()
+        if sub_value in subreddits_bytes:
+            return True
+
+    for match in _SUB_RE.finditer(line):
+        sub_value = b"r/" + match.group(1).replace(b"\\/", b"/").lower()
+        if sub_value in subreddits_bytes:
+            return True
+
+    return False
+
+
+def _top_level_subreddit_matches(line: bytes, subreddits: set[str]) -> bool:
+    """Return whether the parsed top-level subreddit belongs to ``subreddits``.
+
+    Crossposts can contain nested ``crosspost_parent_list`` objects with their
+    own subreddit fields. The byte regex prefilter may see those nested fields,
+    so this parsed check is the source of truth before writing a record.
+    """
+    try:
+        record = orjson.loads(line)
+    except orjson.JSONDecodeError:
+        return False
+
+    prefixed = _normalize_prefixed_subreddit(record.get("subreddit_name_prefixed"))
+    if prefixed is not None:
+        return prefixed in subreddits
+
+    fallback = _normalize_prefixed_subreddit(record.get("subreddit"))
+    return fallback in subreddits if fallback is not None else False
 
 
 # ── Path resolution ─────────────────────────────────────────────────────────
@@ -122,6 +174,7 @@ def _save_progress(output_path: Path, progress: dict) -> None:
 def _filter_file(
     input_path: Path,
     zout: zstd.ZstdCompressionWriter,
+    subreddits: set[str],
     subreddits_bytes: set[bytes],
     start_epoch: int | None,
     end_epoch: int | None,
@@ -143,13 +196,12 @@ def _filter_file(
                     continue
                 rows_read += 1
 
-                # ── Fast byte-level subreddit check ──
-                m_sub = _SUB_PREFIX_RE.search(line)
-                if m_sub is None:
+                # ── Fast byte-level candidate check ──
+                if not _line_may_match_subreddit(line, subreddits_bytes):
                     continue
-                # JSON may encode '/' as '\/' — normalise before comparison.
-                sub_value = m_sub.group(1).replace(b"\\/", b"/").lower()
-                if sub_value not in subreddits_bytes:
+
+                # ── Authoritative top-level subreddit check ──
+                if not _top_level_subreddit_matches(line, subreddits):
                     continue
 
                 # ── Optional time-window check (also byte-level) ──
@@ -275,6 +327,7 @@ def filter_by_subreddit(
                 stats = _filter_file(
                     input_path,
                     zout,
+                    subreddits,
                     subreddits_bytes,
                     start_epoch,
                     end_epoch,
@@ -310,8 +363,9 @@ def filter_all(
     start_epoch: int | None = None,
     end_epoch: int | None = None,
     resume: bool = True,
+    kinds: tuple[str, ...] = ("comments", "submissions"),
 ) -> dict:
-    """Filter both comments and submissions by the default subreddit list.
+    """Filter comments and/or submissions by the default subreddit list.
 
     Convenience wrapper around :func:`filter_by_subreddit`.
     """
@@ -322,7 +376,9 @@ def filter_all(
     log.info("Loaded %d subreddits from %s", len(subreddits), list_path.name)
 
     results: dict[str, dict] = {}
-    for kind in ("comments", "submissions"):
+    for kind in kinds:
+        if kind not in {"comments", "submissions"}:
+            raise ValueError(f"Unsupported kind: {kind}")
         results[kind] = filter_by_subreddit(
             kind=kind,
             subreddits=subreddits,

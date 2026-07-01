@@ -61,8 +61,23 @@ def allAnalysis(
     out_tables.mkdir(parents=True, exist_ok=True)
     out_figures.mkdir(parents=True, exist_ok=True)
 
+    summary_path = out_output / SUMMARY_FILENAME
     sections: list[AnalysisSection] = []
+    _write_summary(
+        summary_path=summary_path,
+        output_dir=out_output,
+        sections=sections,
+        wip_markdown_path=None,
+    )
+
     sections.append(run_describe_outputs(tables_dir=out_tables, figures_dir=out_figures))
+    _write_summary(
+        summary_path=summary_path,
+        output_dir=out_output,
+        sections=sections,
+        wip_markdown_path=None,
+    )
+
     sections.append(
         run_discursivity_outputs(
             tables_dir=out_tables,
@@ -70,6 +85,13 @@ def allAnalysis(
             thread_prep=thread_prep,
         ),
     )
+    _write_summary(
+        summary_path=summary_path,
+        output_dir=out_output,
+        sections=sections,
+        wip_markdown_path=None,
+    )
+
     sections.append(
         run_helpers_outputs(
             tables_dir=out_tables,
@@ -77,12 +99,25 @@ def allAnalysis(
             thread_prep=thread_prep,
         ),
     )
+    _write_summary(
+        summary_path=summary_path,
+        output_dir=out_output,
+        sections=sections,
+        wip_markdown_path=None,
+    )
+
     sections.append(
         run_resilience_outputs(
             tables_dir=out_tables,
             figures_dir=out_figures,
             thread_prep=thread_prep,
         ),
+    )
+    _write_summary(
+        summary_path=summary_path,
+        output_dir=out_output,
+        sections=sections,
+        wip_markdown_path=None,
     )
 
     panel_csv_path, panel_metadata_path, _ = ensure_monthly_panel(
@@ -96,6 +131,12 @@ def allAnalysis(
             table_paths=[panel_csv_path, panel_metadata_path],
             figure_paths=[],
         ),
+    )
+    _write_summary(
+        summary_path=summary_path,
+        output_dir=out_output,
+        sections=sections,
+        wip_markdown_path=None,
     )
 
     did = run_did_analysis(
@@ -112,6 +153,12 @@ def allAnalysis(
             figure_paths=list(did.figure_paths.values()),
         ),
     )
+    _write_summary(
+        summary_path=summary_path,
+        output_dir=out_output,
+        sections=sections,
+        wip_markdown_path=None,
+    )
 
     responsiveness = run_responsiveness_analysis(
         tables_dir=out_tables,
@@ -125,6 +172,12 @@ def allAnalysis(
             table_paths=list(responsiveness.table_paths.values()),
             figure_paths=list(responsiveness.figure_paths.values()),
         ),
+    )
+    _write_summary(
+        summary_path=summary_path,
+        output_dir=out_output,
+        sections=sections,
+        wip_markdown_path=None,
     )
 
     mechanisms = run_mechanisms_analysis(
@@ -141,6 +194,12 @@ def allAnalysis(
             figure_paths=list(mechanisms.figure_paths.values()),
         ),
     )
+    _write_summary(
+        summary_path=summary_path,
+        output_dir=out_output,
+        sections=sections,
+        wip_markdown_path=None,
+    )
 
     ai_mentions = run_ai_mentions_analysis(
         tables_dir=out_tables,
@@ -154,6 +213,12 @@ def allAnalysis(
             table_paths=list(ai_mentions.table_paths.values()),
             figure_paths=list(ai_mentions.figure_paths.values()),
         ),
+    )
+    _write_summary(
+        summary_path=summary_path,
+        output_dir=out_output,
+        sections=sections,
+        wip_markdown_path=None,
     )
 
     content = run_content_metrics_analysis(
@@ -169,6 +234,12 @@ def allAnalysis(
             figure_paths=list(content.figure_paths.values()),
         ),
     )
+    _write_summary(
+        summary_path=summary_path,
+        output_dir=out_output,
+        sections=sections,
+        wip_markdown_path=None,
+    )
 
     interactions = run_interactions_analysis(
         tables_dir=out_tables,
@@ -182,6 +253,12 @@ def allAnalysis(
             table_paths=list(interactions.table_paths.values()),
             figure_paths=list(interactions.figure_paths.values()),
         ),
+    )
+    _write_summary(
+        summary_path=summary_path,
+        output_dir=out_output,
+        sections=sections,
+        wip_markdown_path=None,
     )
 
     wip = run_wip_suite(
@@ -198,14 +275,11 @@ def allAnalysis(
         ),
     )
 
-    summary_path = out_output / SUMMARY_FILENAME
-    summary_path.write_text(
-        _build_summary_markdown(
-            output_dir=out_output,
-            sections=sections,
-            wip_markdown_path=wip.markdown_path,
-        ),
-        encoding="utf-8",
+    _write_summary(
+        summary_path=summary_path,
+        output_dir=out_output,
+        sections=sections,
+        wip_markdown_path=wip.markdown_path,
     )
     return AllAnalysisArtifacts(summary_path=summary_path, sections=sections)
 
@@ -462,11 +536,29 @@ def _override_view_dirs(*, tables_dir: Path, figures_dir: Path) -> Iterator[None
         views.FIGURES_DIR = old_figures_dir
 
 
+def _write_summary(
+    *,
+    summary_path: Path,
+    output_dir: Path,
+    sections: list[AnalysisSection],
+    wip_markdown_path: Path | None,
+) -> None:
+    """Write the combined analysis summary for the sections completed so far."""
+    summary_path.write_text(
+        _build_summary_markdown(
+            output_dir=output_dir,
+            sections=sections,
+            wip_markdown_path=wip_markdown_path,
+        ),
+        encoding="utf-8",
+    )
+
+
 def _build_summary_markdown(
     *,
     output_dir: Path,
     sections: list[AnalysisSection],
-    wip_markdown_path: Path,
+    wip_markdown_path: Path | None,
 ) -> str:
     timestamp = datetime.now(tz=timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
     lines: list[str] = [
@@ -478,7 +570,7 @@ def _build_summary_markdown(
         "",
     ]
 
-    if wip_markdown_path.exists():
+    if wip_markdown_path is not None and wip_markdown_path.exists():
         lines.append("## Key Results")
         lines.append(f"Source: [{wip_markdown_path.name}]({_relative_to_output(wip_markdown_path, output_dir)})")
         lines.append("")

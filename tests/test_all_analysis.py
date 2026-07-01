@@ -5,6 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import pandas as pd
+import pytest
 
 from src import all_analysis as all_analysis_module
 
@@ -118,3 +119,42 @@ def test_all_analysis_writes_combined_summary(tmp_path: Path) -> None:
     assert "tables/community-monthly-panel.csv" in summary_text
     assert "figures/did-event-study-comments.svg" in summary_text
     assert "WIP Key Results" in summary_text
+
+
+def test_all_analysis_writes_partial_summary_before_late_failure(tmp_path: Path) -> None:
+    output_dir = tmp_path / "output"
+    tables_dir = output_dir / "tables"
+    figures_dir = output_dir / "figures"
+    tables_dir.mkdir(parents=True, exist_ok=True)
+    figures_dir.mkdir(parents=True, exist_ok=True)
+
+    describe_table = tables_dir / "describe-comments-summary.csv"
+    describe_table.write_text("a,b\n1,2\n", encoding="utf-8")
+
+    original_describe = all_analysis_module.run_describe_outputs
+    original_discursivity = all_analysis_module.run_discursivity_outputs
+
+    def fail_discursivity(**_: object) -> all_analysis_module.AnalysisSection:
+        raise RuntimeError("discursivity failed")
+
+    try:
+        all_analysis_module.run_describe_outputs = lambda **_: all_analysis_module.AnalysisSection(
+            title="Describe",
+            description="Describe outputs.",
+            table_paths=[describe_table],
+            figure_paths=[],
+        )
+        all_analysis_module.run_discursivity_outputs = fail_discursivity
+
+        with pytest.raises(RuntimeError, match="discursivity failed"):
+            all_analysis_module.allAnalysis(output_dir=output_dir)
+    finally:
+        all_analysis_module.run_describe_outputs = original_describe
+        all_analysis_module.run_discursivity_outputs = original_discursivity
+
+    summary_path = output_dir / "summary.md"
+    assert summary_path.exists()
+    summary_text = summary_path.read_text(encoding="utf-8")
+    assert "# Analysis Summary" in summary_text
+    assert "Describe outputs." in summary_text
+    assert "tables/describe-comments-summary.csv" in summary_text

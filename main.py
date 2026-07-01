@@ -109,6 +109,7 @@ def cmd_filter_subreddit() -> int:
         --start  2022-06-01        inclusive start (ISO date)
         --end    2022-07-01        exclusive end (ISO date)
         --tag    chan2025           output filename tag
+        --kind   both               comments, submissions, or both
         --no-resume                start fresh instead of resuming
     """
     import argparse
@@ -123,6 +124,12 @@ def cmd_filter_subreddit() -> int:
                         help="Exclusive end date (YYYY-MM-DD)")
     parser.add_argument("--tag", type=str, default="chan2025",
                         help="Output filename tag")
+    parser.add_argument(
+        "--kind",
+        choices=("comments", "submissions", "both"),
+        default="both",
+        help="Which record type to filter",
+    )
     parser.add_argument("--no-resume", action="store_true",
                         help="Do not resume from previous run")
 
@@ -158,6 +165,7 @@ def cmd_filter_subreddit() -> int:
         start_epoch=start_epoch,
         end_epoch=end_epoch,
         resume=not args.no_resume,
+        kinds=("comments", "submissions") if args.kind == "both" else (args.kind,),
     )
     for kind, stats in results.items():
         logging.getLogger(__name__).info(

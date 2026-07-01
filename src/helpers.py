@@ -284,6 +284,25 @@ def _discover_filtered_paths(kind: str) -> list[Path]:
     return [p for p in paths if not p.name.endswith(".progress.json")]
 
 
+def _discover_matching_submission_paths(comment_paths: list[Path]) -> list[Path]:
+    """Find submission exports matching the provided filtered comment exports."""
+    submission_paths: list[Path] = []
+    seen: set[Path] = set()
+    prefix = "filter-comments-"
+
+    for comment_path in comment_paths:
+        if not comment_path.name.startswith(prefix):
+            continue
+        candidate = comment_path.with_name(
+            f"filter-submissions-{comment_path.name[len(prefix):]}",
+        )
+        if candidate.exists() and candidate not in seen:
+            submission_paths.append(candidate)
+            seen.add(candidate)
+
+    return submission_paths
+
+
 def compute_helpers(
     comment_paths: list[Path] | None = None,
     *,
@@ -337,7 +356,8 @@ def _compute_helpers_partitioned(
     thread_prep: ThreadPrepConfig,
 ) -> HelpersResult:
     """Compute helper concentration from submission-hash shards via SQLite."""
-    partitioned = prepare_thread_partitions(comment_paths, [], config=thread_prep)
+    submission_paths = _discover_matching_submission_paths(comment_paths)
+    partitioned = prepare_thread_partitions(comment_paths, submission_paths, config=thread_prep)
     sqlite_path = partitioned.root_dir / "helpers-author-counts.sqlite"
     if sqlite_path.exists():
         sqlite_path.unlink()

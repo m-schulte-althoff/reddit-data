@@ -142,6 +142,52 @@ def test_filter_submissions(raw_tree: Path) -> None:
     assert records[0]["id"] == "s1"
 
 
+def test_filter_submissions_excludes_crosspost_parent_only_match(tmp_path: Path) -> None:
+    """Nested crosspost parent subreddit fields must not admit off-list posts."""
+    raw_dir = tmp_path / "data" / "raw"
+    out_dir = tmp_path / "data" / "processed"
+    submissions_dir = raw_dir / "reddit" / "submissions"
+    records = [
+        {
+            "id": "x1",
+            "title": "Crosspost from science",
+            "crosspost_parent_list": [
+                {
+                    "subreddit": "science",
+                    "subreddit_name_prefixed": "r/science",
+                    "title": "Original science post",
+                },
+            ],
+            "subreddit": "alphafold",
+            "subreddit_name_prefixed": "r/alphafold",
+            "author": "user1",
+            "created_utc": 1654100000,
+        },
+        {
+            "id": "sci1",
+            "title": "Direct science post",
+            "subreddit": "science",
+            "subreddit_name_prefixed": "r/science",
+            "author": "user2",
+            "created_utc": 1654200000,
+        },
+    ]
+    write_zst_jsonl(submissions_dir / "RS_2022-06.zst", records)
+
+    result = filter_by_subreddit(
+        kind="submissions",
+        subreddits={"r/science"},
+        output_tag="test_crosspost",
+        raw_dir=raw_dir,
+        output_dir=out_dir,
+        resume=False,
+    )
+
+    assert result["rows_written"] == 1
+    output_records = read_zst_jsonl(Path(result["output_file"]))
+    assert [record["id"] for record in output_records] == ["sci1"]
+
+
 def test_filter_excludes_non_matching(raw_tree: Path) -> None:
     raw_dir = raw_tree / "data" / "raw"
     out_dir = raw_tree / "data" / "processed"

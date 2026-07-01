@@ -23,3 +23,25 @@ def test_cmd_panel_passes_thread_prep_config(monkeypatch, tmp_path: Path) -> Non
 
     assert main.cmd_panel() == 0
     assert captured["partitions"] == 8
+
+
+def test_cmd_filter_subreddit_passes_kind(monkeypatch) -> None:
+    captured: dict[str, tuple[str, ...]] = {}
+
+    def fake_filter_all(**kwargs: object) -> dict[str, dict[str, object]]:
+        kinds = kwargs["kinds"]
+        assert isinstance(kinds, tuple)
+        captured["kinds"] = kinds
+        return {"submissions": {"rows_written": 1, "output_file": "out.zst"}}
+
+    from src import filter as filter_module
+
+    monkeypatch.setattr(filter_module, "filter_all", fake_filter_all)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["main.py", "filter-subreddit", "--kind", "submissions", "--tag", "repair"],
+    )
+
+    assert main.cmd_filter_subreddit() == 0
+    assert captured["kinds"] == ("submissions",)

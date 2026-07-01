@@ -16,7 +16,7 @@ from src.helpers import (
     classify_subreddit,
     compute_helpers,
 )
-from src.thread_prep import normalize_thread_prep_config
+from src.thread_prep import normalize_thread_prep_config, prepare_thread_partitions
 from tests.conftest import write_zst_jsonl
 
 
@@ -208,6 +208,33 @@ class TestComputeHelpers:
         partitioned_result = compute_helpers([p], thread_prep=config)
 
         assert partitioned_result.cells == default_result.cells
+
+    def test_partitioned_reuses_matching_submission_cache(self, tmp_path: Path):
+        records = _make_comments("AskReddit", {"alice": 2, "bob": 1}, ts=1654100000)
+        processed_dir = tmp_path / "processed"
+        comments_path = processed_dir / "filter-comments-test.jsonl.zst"
+        submissions_path = processed_dir / "filter-submissions-test.jsonl.zst"
+        write_zst_jsonl(comments_path, records)
+        write_zst_jsonl(
+            submissions_path,
+            [
+                {
+                    "id": "s1",
+                    "subreddit": "AskReddit",
+                    "author": "op",
+                    "created_utc": 1654100000,
+                },
+            ],
+        )
+        config = normalize_thread_prep_config(2, cache_dir=tmp_path / "cache")
+        assert config is not None
+
+        artifacts = prepare_thread_partitions([comments_path], [submissions_path], config=config)
+        manifest_before = artifacts.manifest_path.read_text(encoding="utf-8")
+
+        compute_helpers([comments_path], thread_prep=config)
+
+        assert artifacts.manifest_path.read_text(encoding="utf-8") == manifest_before
 
 
 # ── analyse_helpers ──────────────────────────────────────────────────────────
