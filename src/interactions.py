@@ -650,30 +650,9 @@ def _build_monthly_frame(sqlite_path: Path) -> pd.DataFrame:
         rows: list[dict[str, Any]] = []
         for index, subreddit in enumerate(subreddits, start=1):
             log.info("Aggregating interaction metrics for subreddit %d/%d: %s", index, len(subreddits), subreddit)
-            post_frame = _load_subreddit_post_metrics(conn, subreddit)
-            author_activity = pd.read_sql_query(
-                """
-                SELECT subreddit, month, author
-                FROM author_activity
-                WHERE subreddit = ?
-                ORDER BY month, author
-                """,
-                conn,
-                params=(subreddit,),
-            )
-            reply_edges = pd.read_sql_query(
-                """
-                SELECT subreddit, month, source_author, target_author, edge_count
-                FROM reply_edges
-                WHERE subreddit = ?
-                ORDER BY month, source_author, target_author
-                """,
-                conn,
-                params=(subreddit,),
-            )
-            author_metrics = _author_history_metrics(author_activity, [subreddit], months)
-            post_metrics = _post_monthly_metrics(post_frame)
-            dyad_metrics = _dyad_monthly_metrics(reply_edges)
+            author_metrics = _sqlite_author_monthly_metrics(conn, subreddit, months)
+            post_metrics = _sqlite_post_monthly_metrics(conn, subreddit)
+            dyad_metrics = _sqlite_dyad_monthly_metrics(conn, subreddit)
             for month in months:
                 author_row = author_metrics.get((subreddit, month), {})
                 post_row = post_metrics.get((subreddit, month), {})
@@ -764,6 +743,188 @@ def _load_subreddit_post_metrics(conn: sqlite3.Connection, subreddit: str) -> pd
         conn,
         params=(subreddit, subreddit),
     )
+
+
+def _sqlite_author_monthly_metrics(
+    conn: sqlite3.Connection,
+    subreddit: str,
+    months: list[str],
+) -> dict[tuple[str, str], dict[str, float | int]]:
+    """Compute author-history metrics in SQLite without materializing authors."""
+    rows = conn.execute(
+        """
+        WITH author_months AS (
+            SELECT month, author
+            FROM author_activity
+            WHERE subreddit = ?
+        ), first_months AS (
+            SELECT author, MIN(month) AS first_month
+            FROM author_months
+            GROUP BY author
+        ), current_counts AS (
+            SELECT month, COUNT(*) AS unique_authors
+            FROM author_months
+            GROUP BY month
+        ), repeat_counts AS (
+            SELECT current.month, COUNT(*) AS repeat_authors
+            FROM author_months current
+            JOIN author_months previous
+              ON previous.author = current.author
+             AND previous.month = strftime('%Y-%m', date(current.month || '-01', '-1 month'))
+            GROUP BY current.month
+        ), new_counts AS (
+            SELECT month, COUNT(*) AS new_authors
+            FROM author_months
+            JOIN first_months USING (author)
+            WHERE month = first_month
+            GROUP BY month
+        ), returning_counts AS (
+            SELECT current.month, COUNT(*) AS returning_authors
+            FROM author_months current
+            JOIN first_months first USING (author)
+            WHERE current.month > first.first_month
+              AND NOT EXISTS (
+                  SELECT 1
+                  FROM author_months previous
+                  WHERE previous.author = current.author
+                    AND previous.month = strftime('%Y-%m', date(current.month || '-01', '-1 month'))
+              )
+            GROUP BY current.month
+        )
+        SELECT
+            months.month,
+            COALESCE(current_counts.unique_authors, 0),
+            COALESCE(new_counts.new_authors, 0),
+            COALESCE(returning_counts.returning_authors, 0),
+            COALESCE(repeat_counts.repeat_authors, 0)
+        FROM (SELECT ? AS month UNION ALL SELECT month FROM author_months) months
+        LEFT JOIN current_counts USING (month)
+        LEFT JOIN new_counts USING (month)
+        LEFT JOIN returning_counts USING (month)
+        LEFT JOIN repeat_counts USING (month)
+        GROUP BY months.month
+        """,
+        (subreddit, months[0]),
+    ).fetchall()
+    metrics: dict[tuple[str, str], dict[str, float | int]] = {}
+    values = {
+        str(row[0]): (int(row[1]), int(row[2]), int(row[3]), int(row[4]))
+        for row in rows
+    }
+    for month in months:
+        unique_authors, new_authors, returning_authors, repeat_authors = values.get(month, (0, 0, 0, 0))
+        denominator = unique_authors or 1
+        metrics[(subreddit, month)] = {
+            "unique_authors": unique_authors,
+            "new_author_share": new_authors / denominator,
+            "returning_author_share": returning_authors / denominator,
+            "repeat_author_share": repeat_authors / denominator,
+        }
+    return metrics
+
+
+def _sqlite_post_monthly_metrics(
+    conn: sqlite3.Connection,
+    subreddit: str,
+) -> dict[tuple[str, str], dict[str, float]]:
+    """Compute post/thread metrics in SQLite and return only monthly rows."""
+    rows = conn.execute(
+        """
+        WITH helper AS (
+            SELECT
+                h.submission_id,
+                SUM(CASE WHEN h.is_non_op = 1 THEN 1 ELSE 0 END) AS unique_non_op_commenters,
+                SUM(CASE WHEN h.is_non_op = 1 THEN h.comment_count ELSE 0 END) AS non_op_comment_total,
+                COALESCE(MAX(CASE WHEN h.is_non_op = 1 THEN h.comment_count ELSE 0 END), 0) AS max_non_op_comment_count
+            FROM helper_counts h
+            JOIN post_metrics p ON p.submission_id = h.submission_id
+            WHERE p.subreddit = ?
+            GROUP BY h.submission_id
+        ), post_values AS (
+            SELECT
+                p.month,
+                p.op_returned,
+                p.num_comments_observed,
+                p.max_depth,
+                COALESCE(h.unique_non_op_commenters, 0) AS unique_non_op_commenters,
+                COALESCE(h.non_op_comment_total, 0) AS non_op_comment_total,
+                COALESCE(h.max_non_op_comment_count, 0) AS max_non_op_comment_count
+            FROM post_metrics p
+            LEFT JOIN helper h ON h.submission_id = p.submission_id
+            WHERE p.subreddit = ?
+        )
+        SELECT
+            month,
+            AVG(op_returned),
+            AVG(CASE WHEN num_comments_observed > 0 AND max_depth <= 1 THEN 1.0 ELSE 0.0 END),
+            AVG(CASE WHEN unique_non_op_commenters >= 3 THEN 1.0 ELSE 0.0 END),
+            AVG(CASE WHEN non_op_comment_total > 0
+                      AND max_non_op_comment_count * 1.0 / non_op_comment_total > 0.5
+                     THEN 1.0 ELSE 0.0 END),
+            AVG(CASE WHEN unique_non_op_commenters >= 5
+                      AND non_op_comment_total > 0
+                      AND max_non_op_comment_count * 1.0 / non_op_comment_total <= 0.3
+                     THEN 1.0 ELSE 0.0 END)
+        FROM post_values
+        GROUP BY month
+        """,
+        (subreddit, subreddit),
+    ).fetchall()
+    names = (
+        "op_return_rate",
+        "single_commenter_thread_share",
+        "multi_actor_thread_share",
+        "focused_thread_share",
+        "distributed_thread_share",
+    )
+    return {
+        (subreddit, str(row[0])): {name: float(value or 0.0) for name, value in zip(names, row[1:], strict=True)}
+        for row in rows
+    }
+
+
+def _sqlite_dyad_monthly_metrics(
+    conn: sqlite3.Connection,
+    subreddit: str,
+) -> dict[tuple[str, str], dict[str, float]]:
+    """Compute reciprocal and repeated dyad shares in SQLite."""
+    rows = conn.execute(
+        """
+        WITH directed AS (
+            SELECT month, source_author, target_author, edge_count
+            FROM reply_edges
+            WHERE subreddit = ?
+        ), pairs AS (
+            SELECT
+                month,
+                CASE WHEN source_author < target_author THEN source_author ELSE target_author END AS author_a,
+                CASE WHEN source_author < target_author THEN target_author ELSE source_author END AS author_b,
+                COUNT(*) AS directions,
+                SUM(edge_count) AS pair_edges
+            FROM directed
+            GROUP BY month, author_a, author_b
+        ), totals AS (
+            SELECT month, SUM(pair_edges) AS total_edges
+            FROM pairs
+            GROUP BY month
+        )
+        SELECT
+            pairs.month,
+            AVG(CASE WHEN directions >= 2 THEN 1.0 ELSE 0.0 END),
+            SUM(CASE WHEN pair_edges >= 2 THEN pair_edges ELSE 0 END) * 1.0 / totals.total_edges
+        FROM pairs
+        JOIN totals USING (month)
+        GROUP BY pairs.month
+        """,
+        (subreddit,),
+    ).fetchall()
+    return {
+        (subreddit, str(row[0])): {
+            "reciprocal_dyad_share": float(row[1] or 0.0),
+            "repeat_dyad_share": float(row[2] or 0.0),
+        }
+        for row in rows
+    }
 
 
 def _empty_monthly_frame() -> pd.DataFrame:
