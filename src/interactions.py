@@ -641,7 +641,100 @@ def _record_depth_and_edge(
 
 def _build_monthly_frame(sqlite_path: Path) -> pd.DataFrame:
     conn = sqlite3.connect(f"file:{sqlite_path}?mode=ro", uri=True)
-    post_frame = pd.read_sql_query(
+    try:
+        months = _sqlite_months(conn)
+        subreddits = _sqlite_subreddits(conn)
+        if not months or not subreddits:
+            return _empty_monthly_frame()
+
+        rows: list[dict[str, Any]] = []
+        for index, subreddit in enumerate(subreddits, start=1):
+            log.info("Aggregating interaction metrics for subreddit %d/%d: %s", index, len(subreddits), subreddit)
+            post_frame = _load_subreddit_post_metrics(conn, subreddit)
+            author_activity = pd.read_sql_query(
+                """
+                SELECT subreddit, month, author
+                FROM author_activity
+                WHERE subreddit = ?
+                ORDER BY month, author
+                """,
+                conn,
+                params=(subreddit,),
+            )
+            reply_edges = pd.read_sql_query(
+                """
+                SELECT subreddit, month, source_author, target_author, edge_count
+                FROM reply_edges
+                WHERE subreddit = ?
+                ORDER BY month, source_author, target_author
+                """,
+                conn,
+                params=(subreddit,),
+            )
+            author_metrics = _author_history_metrics(author_activity, [subreddit], months)
+            post_metrics = _post_monthly_metrics(post_frame)
+            dyad_metrics = _dyad_monthly_metrics(reply_edges)
+            for month in months:
+                author_row = author_metrics.get((subreddit, month), {})
+                post_row = post_metrics.get((subreddit, month), {})
+                dyad_row = dyad_metrics.get((subreddit, month), {})
+                rows.append({
+                    "subreddit": subreddit,
+                    "month": month,
+                    "community_type": classify_subreddit(subreddit),
+                    "unique_authors": int(author_row.get("unique_authors", 0)),
+                    "new_author_share": float(author_row.get("new_author_share", 0.0)),
+                    "returning_author_share": float(author_row.get("returning_author_share", 0.0)),
+                    "repeat_author_share": float(author_row.get("repeat_author_share", 0.0)),
+                    "op_return_rate": float(post_row.get("op_return_rate", 0.0)),
+                    "reciprocal_dyad_share": float(dyad_row.get("reciprocal_dyad_share", 0.0)),
+                    "repeat_dyad_share": float(dyad_row.get("repeat_dyad_share", 0.0)),
+                    "single_commenter_thread_share": float(post_row.get("single_commenter_thread_share", 0.0)),
+                    "multi_actor_thread_share": float(post_row.get("multi_actor_thread_share", 0.0)),
+                    "focused_thread_share": float(post_row.get("focused_thread_share", 0.0)),
+                    "distributed_thread_share": float(post_row.get("distributed_thread_share", 0.0)),
+                })
+    finally:
+        conn.close()
+
+    monthly = pd.DataFrame(rows).sort_values(["subreddit", "month"], kind="stable").reset_index(drop=True)
+    return _add_interaction_indices(monthly)
+
+
+def _sqlite_months(conn: sqlite3.Connection) -> list[str]:
+    """Return the complete month range represented in the SQLite cache."""
+    rows = conn.execute(
+        """
+        SELECT month FROM post_metrics
+        UNION
+        SELECT month FROM author_activity
+        UNION
+        SELECT month FROM reply_edges
+        ORDER BY month
+        """,
+    ).fetchall()
+    if not rows:
+        return []
+    return iter_month_range(str(rows[0][0]), str(rows[-1][0]))
+
+
+def _sqlite_subreddits(conn: sqlite3.Connection) -> list[str]:
+    """Return subreddits represented in any interaction SQLite table."""
+    rows = conn.execute(
+        """
+        SELECT subreddit FROM post_metrics
+        UNION
+        SELECT subreddit FROM author_activity
+        UNION
+        SELECT subreddit FROM reply_edges
+        """,
+    ).fetchall()
+    return sorted((str(row[0]) for row in rows), key=str.casefold)
+
+
+def _load_subreddit_post_metrics(conn: sqlite3.Connection, subreddit: str) -> pd.DataFrame:
+    """Load one subreddit's post metrics and associated helper summaries."""
+    return pd.read_sql_query(
         """
         SELECT
             p.submission_id,
@@ -656,29 +749,62 @@ def _build_monthly_frame(sqlite_path: Path) -> pd.DataFrame:
         FROM post_metrics p
         LEFT JOIN (
             SELECT
-                submission_id,
-                SUM(CASE WHEN is_non_op = 1 THEN 1 ELSE 0 END) AS unique_non_op_commenters,
-                SUM(CASE WHEN is_non_op = 1 THEN comment_count ELSE 0 END) AS non_op_comment_total,
-                COALESCE(MAX(CASE WHEN is_non_op = 1 THEN comment_count ELSE 0 END), 0) AS max_non_op_comment_count
-            FROM helper_counts
-            GROUP BY submission_id
-        ) h
-        ON h.submission_id = p.submission_id
-        ORDER BY p.subreddit, p.month, p.submission_id
+                h.submission_id,
+                SUM(CASE WHEN h.is_non_op = 1 THEN 1 ELSE 0 END) AS unique_non_op_commenters,
+                SUM(CASE WHEN h.is_non_op = 1 THEN h.comment_count ELSE 0 END) AS non_op_comment_total,
+                COALESCE(MAX(CASE WHEN h.is_non_op = 1 THEN h.comment_count ELSE 0 END), 0) AS max_non_op_comment_count
+            FROM helper_counts h
+            JOIN post_metrics related_post ON related_post.submission_id = h.submission_id
+            WHERE related_post.subreddit = ?
+            GROUP BY h.submission_id
+        ) h ON h.submission_id = p.submission_id
+        WHERE p.subreddit = ?
+        ORDER BY p.month, p.submission_id
         """,
         conn,
+        params=(subreddit, subreddit),
     )
-    author_activity = pd.read_sql_query(
-        "SELECT subreddit, month, author FROM author_activity ORDER BY subreddit, month, author",
-        conn,
-    )
-    reply_edges = pd.read_sql_query(
-        "SELECT subreddit, month, source_author, target_author, edge_count FROM reply_edges ORDER BY subreddit, month, source_author, target_author",
-        conn,
-    )
-    conn.close()
 
-    return _assemble_monthly_frame(post_frame, author_activity, reply_edges)
+
+def _empty_monthly_frame() -> pd.DataFrame:
+    """Return an empty interaction monthly frame with its public columns."""
+    return pd.DataFrame(columns=[
+        "subreddit",
+        "month",
+        "community_type",
+        "unique_authors",
+        "new_author_share",
+        "returning_author_share",
+        "repeat_author_share",
+        "op_return_rate",
+        "reciprocal_dyad_share",
+        "repeat_dyad_share",
+        "single_commenter_thread_share",
+        "multi_actor_thread_share",
+        "focused_thread_share",
+        "distributed_thread_share",
+        "bond_index",
+        "identity_index",
+    ])
+
+
+def _add_interaction_indices(monthly: pd.DataFrame) -> pd.DataFrame:
+    """Add standardized bond and identity indices to monthly interaction metrics."""
+    active_mask = monthly["unique_authors"] > 0
+    monthly["bond_index"] = (
+        _zscore(monthly["op_return_rate"], active_mask)
+        + _zscore(monthly["reciprocal_dyad_share"], active_mask)
+        + _zscore(monthly["repeat_dyad_share"], active_mask)
+        + _zscore(monthly["repeat_author_share"], active_mask)
+    )
+    monthly["identity_index"] = (
+        _zscore(monthly["unique_authors"].astype(float), active_mask)
+        + _zscore(monthly["new_author_share"], active_mask)
+        + _zscore(monthly["distributed_thread_share"], active_mask)
+        - _zscore(monthly["focused_thread_share"], active_mask)
+    )
+    monthly.loc[~active_mask, ["bond_index", "identity_index"]] = 0.0
+    return monthly
 
 
 def _assemble_monthly_frame(
@@ -689,24 +815,7 @@ def _assemble_monthly_frame(
     months = _all_months(post_frame, author_activity, reply_edges)
     subreddits = _all_subreddits(post_frame, author_activity, reply_edges)
     if not months or not subreddits:
-        return pd.DataFrame(columns=[
-            "subreddit",
-            "month",
-            "community_type",
-            "unique_authors",
-            "new_author_share",
-            "returning_author_share",
-            "repeat_author_share",
-            "op_return_rate",
-            "reciprocal_dyad_share",
-            "repeat_dyad_share",
-            "single_commenter_thread_share",
-            "multi_actor_thread_share",
-            "focused_thread_share",
-            "distributed_thread_share",
-            "bond_index",
-            "identity_index",
-        ])
+        return _empty_monthly_frame()
 
     author_metrics = _author_history_metrics(author_activity, subreddits, months)
     post_metrics = _post_monthly_metrics(post_frame)
@@ -736,21 +845,7 @@ def _assemble_monthly_frame(
             })
 
     monthly = pd.DataFrame(rows).sort_values(["subreddit", "month"], kind="stable").reset_index(drop=True)
-    active_mask = monthly["unique_authors"] > 0
-    monthly["bond_index"] = (
-        _zscore(monthly["op_return_rate"], active_mask)
-        + _zscore(monthly["reciprocal_dyad_share"], active_mask)
-        + _zscore(monthly["repeat_dyad_share"], active_mask)
-        + _zscore(monthly["repeat_author_share"], active_mask)
-    )
-    monthly["identity_index"] = (
-        _zscore(monthly["unique_authors"].astype(float), active_mask)
-        + _zscore(monthly["new_author_share"], active_mask)
-        + _zscore(monthly["distributed_thread_share"], active_mask)
-        - _zscore(monthly["focused_thread_share"], active_mask)
-    )
-    monthly.loc[~active_mask, ["bond_index", "identity_index"]] = 0.0
-    return monthly
+    return _add_interaction_indices(monthly)
 
 
 def _all_months(post_frame: pd.DataFrame, author_activity: pd.DataFrame, reply_edges: pd.DataFrame) -> list[str]:

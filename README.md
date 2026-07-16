@@ -217,6 +217,8 @@ uv run python3 main.py interactions-finalize-cache
 ```
 
 Detach with `Ctrl-b` followed by `d`; reattach later with `tmux attach -t reddit-interactions`.
+The finalizer aggregates one subreddit at a time and logs its progress; this keeps
+the large SQLite cache read-only and avoids loading the complete cache into memory.
 
 The same flag is also accepted by `did`, `mechanisms`, `ai-mentions`,
 `content-metrics`, `wip`, `discursivity`, `resilience`, and `helpers`.

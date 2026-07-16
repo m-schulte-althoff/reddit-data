@@ -2,9 +2,14 @@
 
 from __future__ import annotations
 
+import sqlite3
 from pathlib import Path
 
+import pandas as pd
+
 from src.interactions import (
+    _assemble_monthly_frame,
+    _build_monthly_frame,
     finalize_interactions_cache,
     load_interactions_cache,
     run_interactions_analysis,
@@ -294,6 +299,56 @@ def test_finalize_interactions_cache_preserves_sqlite_cache(tmp_path: Path) -> N
     validate_interactions_sqlite(sqlite_path)
     assert sqlite_path.read_bytes() == original_bytes
     assert recovered.monthly.equals(original.monthly)
+
+
+def test_low_memory_monthly_aggregation_matches_full_frame_assembly(tmp_path: Path) -> None:
+    comments_path, submissions_path, tables_dir, figures_dir, cache_dir = _make_processed(tmp_path)
+    run_interactions_analysis(
+        comment_paths=[comments_path],
+        submission_paths=[submissions_path],
+        tables_dir=tables_dir,
+        figures_dir=figures_dir,
+        cache_dir=cache_dir,
+    )
+    sqlite_path = cache_dir / "interactions.sqlite"
+
+    conn = sqlite3.connect(f"file:{sqlite_path}?mode=ro", uri=True)
+    post_frame = pd.read_sql_query(
+        """
+        SELECT
+            p.submission_id, p.subreddit, p.month, p.num_comments_observed,
+            p.op_returned, p.max_depth,
+            COALESCE(h.unique_non_op_commenters, 0) AS unique_non_op_commenters,
+            COALESCE(h.non_op_comment_total, 0) AS non_op_comment_total,
+            COALESCE(h.max_non_op_comment_count, 0) AS max_non_op_comment_count
+        FROM post_metrics p
+        LEFT JOIN (
+            SELECT
+                submission_id,
+                SUM(CASE WHEN is_non_op = 1 THEN 1 ELSE 0 END) AS unique_non_op_commenters,
+                SUM(CASE WHEN is_non_op = 1 THEN comment_count ELSE 0 END) AS non_op_comment_total,
+                COALESCE(MAX(CASE WHEN is_non_op = 1 THEN comment_count ELSE 0 END), 0) AS max_non_op_comment_count
+            FROM helper_counts
+            GROUP BY submission_id
+        ) h ON h.submission_id = p.submission_id
+        ORDER BY p.subreddit, p.month, p.submission_id
+        """,
+        conn,
+    )
+    author_activity = pd.read_sql_query(
+        "SELECT subreddit, month, author FROM author_activity ORDER BY subreddit, month, author",
+        conn,
+    )
+    reply_edges = pd.read_sql_query(
+        "SELECT subreddit, month, source_author, target_author, edge_count FROM reply_edges ORDER BY subreddit, month, source_author, target_author",
+        conn,
+    )
+    conn.close()
+
+    expected = _assemble_monthly_frame(post_frame, author_activity, reply_edges)
+    actual = _build_monthly_frame(sqlite_path)
+
+    assert actual.to_dict("records") == expected.to_dict("records")
 
 
 def test_run_interactions_analysis_partitioned_matches_default(tmp_path: Path) -> None:
