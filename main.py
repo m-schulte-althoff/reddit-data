@@ -26,6 +26,8 @@ Commands:
     ai-mentions    Count GenAI mentions in comments and submissions.
     content-metrics Compute simple content/effort/support proxy metrics.
     interactions   Compute bond-vs-identity interaction structure metrics.
+    interactions-finalize-cache
+                    Finalize interaction outputs from an existing SQLite cache.
     wip            Run the full WIP suite and write key-result summaries.
     describe       Descriptive overview of filtered data (trends, per-subreddit).
     discursivity   Comment-depth / threading metrics from filtered data.
@@ -275,6 +277,31 @@ def cmd_interactions() -> int:
     return 0
 
 
+def cmd_interactions_finalize_cache() -> int:
+    """Validate and finalize interaction outputs from an existing SQLite cache."""
+    import argparse
+
+    from src.config import OUTPUT_DIR
+    from src.interactions import finalize_interactions_cache, validate_interactions_sqlite
+
+    parser = argparse.ArgumentParser(prog="interactions-finalize-cache")
+    parser.add_argument(
+        "--validate-only",
+        action="store_true",
+        help="Validate the existing SQLite cache without building outputs",
+    )
+    args = parser.parse_args(sys.argv[2:])
+    sqlite_path = OUTPUT_DIR / "cache" / "interactions.sqlite"
+    validate_interactions_sqlite(sqlite_path)
+    logging.getLogger(__name__).info("Validated interaction SQLite cache read-only: %s", sqlite_path)
+    if args.validate_only:
+        return 0
+
+    result = finalize_interactions_cache()
+    logging.getLogger(__name__).info("Wrote %s", result.table_paths["monthly"])
+    return 0
+
+
 def cmd_wip() -> int:
     """Run the full WIP suite and write key-result summaries."""
     from src.wip import run_wip_suite
@@ -462,6 +489,10 @@ COMMANDS: dict[str, tuple[callable, str]] = {  # type: ignore[type-arg]
     "ai-mentions": (cmd_ai_mentions, "GenAI mention trends in comments and submissions"),
     "content-metrics": (cmd_content_metrics, "Simple content/effort/support proxy metrics"),
     "interactions": (cmd_interactions, "Bond-vs-identity interaction structure metrics"),
+    "interactions-finalize-cache": (
+        cmd_interactions_finalize_cache,
+        "Finalize interaction outputs from an existing SQLite cache",
+    ),
     "wip": (cmd_wip, "Run the full WIP suite and key-result summaries"),
     "describe": (cmd_describe, "Descriptive overview of filtered data"),
     "discursivity": (cmd_discursivity, "Comment-depth / threading metrics"),

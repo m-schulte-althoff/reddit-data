@@ -47,6 +47,10 @@ uv run python3 main.py content-metrics
 # 13. Bond-vs-identity interaction metrics
 uv run python3 main.py interactions
 
+# Finalize interaction outputs from an existing interaction SQLite cache
+uv run python3 main.py interactions-finalize-cache --validate-only
+uv run python3 main.py interactions-finalize-cache
+
 # 14. Full first-pass WIP suite
 uv run python3 main.py wip
 
@@ -199,6 +203,20 @@ uv run python3 main.py panel --thread-prep-partitions 64
 uv run python3 main.py responsiveness --thread-prep-partitions 64
 uv run python3 main.py interactions --thread-prep-partitions 64
 ```
+
+If a partitioned interaction run has already produced
+`output/cache/interactions.sqlite` but stopped before writing the interaction
+tables and figures, do not rerun `interactions` or `all-analysis`: those commands
+rebuild the SQLite cache when the derived outputs are absent. First validate the
+cache read-only, then finalize only the derived outputs from a persistent terminal:
+
+```bash
+tmux new -s reddit-interactions
+uv run python3 main.py interactions-finalize-cache --validate-only
+uv run python3 main.py interactions-finalize-cache
+```
+
+Detach with `Ctrl-b` followed by `d`; reattach later with `tmux attach -t reddit-interactions`.
 
 The same flag is also accepted by `did`, `mechanisms`, `ai-mentions`,
 `content-metrics`, `wip`, `discursivity`, `resilience`, and `helpers`.

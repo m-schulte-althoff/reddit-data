@@ -34,6 +34,13 @@ log = logging.getLogger(__name__)
 INTERACTIONS_MONTHLY_FILENAME = "interactions-monthly.csv"
 INTERACTIONS_METADATA_FILENAME = "interactions-metadata.json"
 INTERACTIONS_CACHE_VERSION = 1
+INTERACTIONS_TABLES = frozenset({
+    "submissions",
+    "post_metrics",
+    "helper_counts",
+    "author_activity",
+    "reply_edges",
+})
 
 
 @dataclass(frozen=True)
@@ -123,19 +130,13 @@ def run_interactions_analysis(
         submissions = _load_submissions_into_sqlite(sqlite_path, resolved_submission_paths)
         _stream_comments_into_sqlite(sqlite_path, submissions, resolved_comment_paths)
     monthly = _build_monthly_frame(sqlite_path)
-    monthly.to_csv(table_paths["monthly"], index=False)
-    _plot_outputs(monthly, figure_paths)
-
-    payload = {
-        "generated_at": datetime.now(tz=timezone.utc).isoformat(),
-        "fingerprint": fingerprint_hash(_source_payload(resolved_comment_paths, resolved_submission_paths)),
-        "sources": _source_payload(resolved_comment_paths, resolved_submission_paths),
-        "sqlite_path": str(sqlite_path),
-        "n_rows": int(len(monthly)),
-    }
-    table_paths["metadata"].write_text(
-        json.dumps(payload, indent=2, ensure_ascii=False),
-        encoding="utf-8",
+    payload = _write_interactions_outputs(
+        monthly,
+        table_paths=table_paths,
+        figure_paths=figure_paths,
+        comment_paths=resolved_comment_paths,
+        submission_paths=resolved_submission_paths,
+        sqlite_path=sqlite_path,
     )
 
     return InteractionsArtifacts(
@@ -144,6 +145,97 @@ def run_interactions_analysis(
         figure_paths=figure_paths,
         metadata=payload,
     )
+
+
+def validate_interactions_sqlite(sqlite_path: Path) -> None:
+    """Validate the interaction SQLite cache using a read-only connection."""
+    if not sqlite_path.is_file():
+        raise FileNotFoundError(f"Interaction SQLite cache not found: {sqlite_path}")
+
+    conn: sqlite3.Connection | None = None
+    try:
+        conn = sqlite3.connect(f"file:{sqlite_path}?mode=ro", uri=True)
+        table_names = {
+            row[0]
+            for row in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'table'",
+            )
+        }
+        missing_tables = INTERACTIONS_TABLES - table_names
+        if missing_tables:
+            missing = ", ".join(sorted(missing_tables))
+            raise ValueError(f"Interaction SQLite cache is missing tables: {missing}")
+        check_result = conn.execute("PRAGMA quick_check(1)").fetchone()
+        if check_result != ("ok",):
+            raise ValueError(f"Interaction SQLite cache failed quick_check: {check_result}")
+    except sqlite3.DatabaseError as exc:
+        raise ValueError(f"Could not read interaction SQLite cache: {sqlite_path}") from exc
+    finally:
+        if conn is not None:
+            conn.close()
+
+
+def finalize_interactions_cache(
+    *,
+    cache_dir: Path | None = None,
+    tables_dir: Path | None = None,
+    figures_dir: Path | None = None,
+) -> InteractionsArtifacts:
+    """Build interaction outputs from an existing SQLite cache without rebuilding it."""
+    out_tables = tables_dir or TABLES_DIR
+    out_figures = figures_dir or FIGURES_DIR
+    out_cache = cache_dir or (OUTPUT_DIR / "cache")
+    sqlite_path = out_cache / "interactions.sqlite"
+    validate_interactions_sqlite(sqlite_path)
+
+    resolved_comment_paths = discover_filtered_paths("comments")
+    resolved_submission_paths = discover_filtered_paths("submissions")
+    table_paths = _table_paths(out_tables)
+    figure_paths = _figure_paths(out_figures)
+    monthly = _build_monthly_frame(sqlite_path)
+    payload = _write_interactions_outputs(
+        monthly,
+        table_paths=table_paths,
+        figure_paths=figure_paths,
+        comment_paths=resolved_comment_paths,
+        submission_paths=resolved_submission_paths,
+        sqlite_path=sqlite_path,
+    )
+    return InteractionsArtifacts(
+        monthly=monthly,
+        table_paths=table_paths,
+        figure_paths=figure_paths,
+        metadata=payload,
+    )
+
+
+def _write_interactions_outputs(
+    monthly: pd.DataFrame,
+    *,
+    table_paths: dict[str, Path],
+    figure_paths: dict[str, Path],
+    comment_paths: list[Path],
+    submission_paths: list[Path],
+    sqlite_path: Path,
+) -> dict[str, Any]:
+    """Write derived interaction outputs from an assembled monthly frame."""
+    table_paths["monthly"].parent.mkdir(parents=True, exist_ok=True)
+    figure_paths["bond"].parent.mkdir(parents=True, exist_ok=True)
+    monthly.to_csv(table_paths["monthly"], index=False)
+    _plot_outputs(monthly, figure_paths)
+
+    payload = {
+        "generated_at": datetime.now(tz=timezone.utc).isoformat(),
+        "fingerprint": fingerprint_hash(_source_payload(comment_paths, submission_paths)),
+        "sources": _source_payload(comment_paths, submission_paths),
+        "sqlite_path": str(sqlite_path),
+        "n_rows": int(len(monthly)),
+    }
+    table_paths["metadata"].write_text(
+        json.dumps(payload, indent=2, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    return payload
 
 
 def load_interactions_cache(
@@ -548,7 +640,7 @@ def _record_depth_and_edge(
 
 
 def _build_monthly_frame(sqlite_path: Path) -> pd.DataFrame:
-    conn = _connect(sqlite_path)
+    conn = sqlite3.connect(f"file:{sqlite_path}?mode=ro", uri=True)
     post_frame = pd.read_sql_query(
         """
         SELECT

@@ -4,7 +4,12 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from src.interactions import load_interactions_cache, run_interactions_analysis
+from src.interactions import (
+    finalize_interactions_cache,
+    load_interactions_cache,
+    run_interactions_analysis,
+    validate_interactions_sqlite,
+)
 from src.thread_prep import normalize_thread_prep_config
 from tests.conftest import write_zst_jsonl
 
@@ -263,6 +268,32 @@ def test_interactions_cache_invalidates_after_input_change(tmp_path: Path) -> No
         tables_dir=tables_dir,
         figures_dir=figures_dir,
     ) is None
+
+
+def test_finalize_interactions_cache_preserves_sqlite_cache(tmp_path: Path) -> None:
+    comments_path, submissions_path, tables_dir, figures_dir, cache_dir = _make_processed(tmp_path)
+    original = run_interactions_analysis(
+        comment_paths=[comments_path],
+        submission_paths=[submissions_path],
+        tables_dir=tables_dir,
+        figures_dir=figures_dir,
+        cache_dir=cache_dir,
+    )
+    sqlite_path = cache_dir / "interactions.sqlite"
+    original_bytes = sqlite_path.read_bytes()
+
+    for output_path in (*tables_dir.glob("interactions-*"), *figures_dir.glob("interactions-*")):
+        output_path.unlink()
+
+    recovered = finalize_interactions_cache(
+        cache_dir=cache_dir,
+        tables_dir=tables_dir,
+        figures_dir=figures_dir,
+    )
+
+    validate_interactions_sqlite(sqlite_path)
+    assert sqlite_path.read_bytes() == original_bytes
+    assert recovered.monthly.equals(original.monthly)
 
 
 def test_run_interactions_analysis_partitioned_matches_default(tmp_path: Path) -> None:
