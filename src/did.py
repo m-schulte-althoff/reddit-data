@@ -36,6 +36,9 @@ class ModelSpec:
     balanced_only: bool = False
     exclude_top2_general: bool = False
     winsorize: bool = False
+    community_trends: bool = False
+    matched_pre_period: bool = False
+    omit_subreddit: str | None = None
 
 
 @dataclass
@@ -70,6 +73,9 @@ def prepare_analysis_frame(
     balanced_only: bool = False,
     exclude_top2_general: bool = False,
     winsorize: bool = False,
+    matched_pre_period: bool = False,
+    omit_subreddit: str | None = None,
+    log_transform: bool = True,
 ) -> pd.DataFrame:
     """Prepare a regression-ready frame for one outcome and specification."""
     frame = panel.loc[
@@ -100,8 +106,14 @@ def prepare_analysis_frame(
         )
         frame = frame.loc[~frame["subreddit"].isin(top_general)].copy()
 
+    if omit_subreddit is not None:
+        frame = frame.loc[frame["subreddit"] != omit_subreddit].copy()
+
     frame["health"] = (frame["community_type"] == "health").astype(int)
     frame["post"] = (frame["month"] >= cutoff_month).astype(int)
+    frame["time_index"] = frame["month"].map(
+        lambda month: months_since(month, reference=cutoff_month),
+    )
 
     raw_outcome = frame[outcome_column].astype(float).fillna(0.0)
     if winsorize and not raw_outcome.empty:
@@ -110,7 +122,10 @@ def prepare_analysis_frame(
         raw_outcome = raw_outcome.clip(lower=lower, upper=upper)
 
     frame["raw_outcome"] = raw_outcome
-    frame["outcome"] = raw_outcome.map(lambda value: math.log1p(max(value, 0.0)))
+    if log_transform:
+        frame["outcome"] = raw_outcome.map(lambda value: math.log1p(max(value, 0.0)))
+    else:
+        frame["outcome"] = raw_outcome
     frame["health_post"] = frame["health"] * frame["post"]
 
     pre_activity = (
@@ -121,6 +136,9 @@ def prepare_analysis_frame(
     )
     weights = frame["subreddit"].map(pre_activity).fillna(0.0).clip(lower=1.0)
     frame["pre_activity_weight"] = weights
+    frame["match_weight"] = 1.0
+    if matched_pre_period:
+        frame = _apply_pre_period_match_weights(frame, cutoff_month)
     return frame.reset_index(drop=True)
 
 
@@ -129,6 +147,7 @@ def estimate_twfe_did(
     outcome_column: str,
     *,
     spec: ModelSpec,
+    log_transform: bool = True,
 ) -> dict[str, Any]:
     """Estimate a two-way fixed-effects DiD model with clustered SEs."""
     frame = prepare_analysis_frame(
@@ -138,11 +157,16 @@ def estimate_twfe_did(
         balanced_only=spec.balanced_only,
         exclude_top2_general=spec.exclude_top2_general,
         winsorize=spec.winsorize,
+        matched_pre_period=spec.matched_pre_period,
+        omit_subreddit=spec.omit_subreddit,
+        log_transform=log_transform,
     )
     if frame.empty:
         raise ValueError(f"No data available for {outcome_column} / {spec.model}")
 
     formula = "outcome ~ health_post + C(subreddit) + C(month)"
+    if spec.community_trends:
+        formula += " + C(subreddit):time_index"
     if spec.weighted:
         fitted = smf.wls(
             formula,
@@ -150,9 +174,12 @@ def estimate_twfe_did(
             weights=frame["pre_activity_weight"],
         ).fit(cov_type="cluster", cov_kwds={"groups": frame["subreddit"]})
     else:
-        fitted = smf.ols(formula, data=frame).fit(
-            cov_type="cluster",
-            cov_kwds={"groups": frame["subreddit"]},
+        estimator = smf.wls if spec.matched_pre_period else smf.ols
+        estimator_kwargs: dict[str, Any] = {"data": frame}
+        if spec.matched_pre_period:
+            estimator_kwargs["weights"] = frame["match_weight"]
+        fitted = estimator(formula, **estimator_kwargs).fit(
+            cov_type="cluster", cov_kwds={"groups": frame["subreddit"]},
         )
 
     return {
@@ -182,7 +209,135 @@ def estimate_twfe_did(
         "balanced_only": int(spec.balanced_only),
         "exclude_top2_general": int(spec.exclude_top2_general),
         "winsorized": int(spec.winsorize),
+        "community_trends": int(spec.community_trends),
+        "matched_pre_period": int(spec.matched_pre_period),
+        "omit_subreddit": spec.omit_subreddit or "",
     }
+
+
+def _apply_pre_period_match_weights(
+    frame: pd.DataFrame,
+    cutoff_month: str,
+) -> pd.DataFrame:
+    """Weight general communities by nearest pre-period health-community matches."""
+    pre_period = frame.loc[frame["month"] < cutoff_month].copy()
+    if pre_period.empty:
+        return frame
+
+    feature_rows: list[dict[str, float | str]] = []
+    for subreddit, group in pre_period.groupby("subreddit", sort=True):
+        values = group["raw_outcome"].astype(float)
+        time = group["time_index"].astype(float)
+        slope = 0.0
+        if len(group) >= 2 and time.nunique() > 1:
+            slope = float(pd.Series(values.values).cov(pd.Series(time.values)) / time.var())
+        feature_rows.append({
+            "subreddit": str(subreddit),
+            "health": float(group["health"].iloc[0]),
+            "outcome_mean": float(values.mean()),
+            "outcome_slope": slope,
+            "outcome_std": float(values.std(ddof=0)),
+            "engagement_mean": float(group["comments_per_submission"].mean()),
+        })
+
+    features = pd.DataFrame(feature_rows)
+    health = features.loc[features["health"] == 1].copy()
+    general = features.loc[features["health"] == 0].copy()
+    if health.empty or general.empty:
+        return frame
+
+    feature_columns = ["outcome_mean", "outcome_slope", "outcome_std", "engagement_mean"]
+    combined = pd.concat([health[feature_columns], general[feature_columns]], ignore_index=True)
+    scale = combined.std(ddof=0).replace(0.0, 1.0)
+    health_values = (health[feature_columns] - combined.mean()) / scale
+    general_values = (general[feature_columns] - combined.mean()) / scale
+
+    match_counts = {str(subreddit): 0.0 for subreddit in general["subreddit"]}
+    for _, health_row in health_values.iterrows():
+        distances = ((general_values - health_row) ** 2).sum(axis=1)
+        matched_subreddit = str(general.loc[distances.idxmin(), "subreddit"])
+        match_counts[matched_subreddit] += 1.0
+
+    frame["match_weight"] = frame.apply(
+        lambda row: 1.0 if row["health"] else match_counts.get(str(row["subreddit"]), 0.0),
+        axis=1,
+    )
+    return frame.loc[frame["match_weight"] > 0].copy()
+
+
+def run_pretrend_test(
+    panel: pd.DataFrame,
+    outcome_column: str,
+    *,
+    cutoff_month: str = BASELINE_CUTOFF,
+    log_transform: bool = True,
+) -> dict[str, Any]:
+    """Jointly test that health-community event-study leads equal zero."""
+    frame = prepare_analysis_frame(
+        panel,
+        outcome_column,
+        cutoff_month=cutoff_month,
+        log_transform=log_transform,
+    )
+    frame["event_time"] = frame["month"].map(
+        lambda month: months_since(month, reference=cutoff_month),
+    )
+    frame["event_bin"] = frame["event_time"].map(_bin_event_time)
+    terms: list[str] = []
+    lead_terms: list[str] = []
+    for event_time in sorted(frame["event_bin"].unique()):
+        if int(event_time) == -1:
+            continue
+        column_name = f"health_event_{_event_token(int(event_time))}"
+        frame[column_name] = (
+            (frame["event_bin"] == event_time) & (frame["health"] == 1)
+        ).astype(int)
+        terms.append(column_name)
+        if int(event_time) < -1:
+            lead_terms.append(column_name)
+
+    formula = "outcome ~ " + " + ".join(terms) + " + C(subreddit) + C(month)"
+    fitted = smf.ols(formula, data=frame).fit(
+        cov_type="cluster", cov_kwds={"groups": frame["subreddit"]},
+    )
+    if not lead_terms:
+        return {
+            "outcome": outcome_column,
+            "cutoff_month": cutoff_month,
+            "n_leads": 0,
+            "statistic": float("nan"),
+            "p_value": float("nan"),
+        }
+    test = fitted.wald_test(", ".join(f"{term} = 0" for term in lead_terms), scalar=True)
+    return {
+        "outcome": outcome_column,
+        "cutoff_month": cutoff_month,
+        "n_leads": len(lead_terms),
+        "statistic": float(test.statistic),
+        "p_value": float(test.pvalue),
+    }
+
+
+def run_leave_one_out(
+    panel: pd.DataFrame,
+    outcome_column: str,
+    *,
+    log_transform: bool = True,
+) -> pd.DataFrame:
+    """Estimate the baseline DiD while omitting one community at a time."""
+    rows: list[dict[str, Any]] = []
+    eligible = panel.loc[
+        panel["community_type"].isin(["general", "health"]), "subreddit"
+    ].drop_duplicates().sort_values(kind="stable")
+    for subreddit in eligible:
+        result = estimate_twfe_did(
+            panel,
+            outcome_column,
+            spec=ModelSpec(model="leave_one_out", omit_subreddit=str(subreddit)),
+            log_transform=log_transform,
+        )
+        rows.append(result)
+    return pd.DataFrame(rows)
 
 
 def run_event_study(
@@ -191,9 +346,15 @@ def run_event_study(
     *,
     cutoff_month: str = BASELINE_CUTOFF,
     weighted: bool = False,
+    log_transform: bool = True,
 ) -> pd.DataFrame:
     """Estimate an event-study specification for one outcome."""
-    frame = prepare_analysis_frame(panel, outcome_column, cutoff_month=cutoff_month)
+    frame = prepare_analysis_frame(
+        panel,
+        outcome_column,
+        cutoff_month=cutoff_month,
+        log_transform=log_transform,
+    )
     frame["event_time"] = frame["month"].map(lambda month: months_since(month, reference=cutoff_month))
     frame["event_bin"] = frame["event_time"].map(_bin_event_time)
 
@@ -262,8 +423,12 @@ def run_did_analysis(
         ModelSpec(model="balanced_panel", balanced_only=True),
         ModelSpec(model="exclude_top2_general", exclude_top2_general=True),
         ModelSpec(model="winsorized_1_99", winsorize=True),
+        ModelSpec(model="community_specific_trends", community_trends=True),
+        ModelSpec(model="matched_pre_period", matched_pre_period=True),
         ModelSpec(model="cutoff_2023_03", cutoff_month="2023-03"),
         ModelSpec(model="cutoff_2023_07", cutoff_month="2023-07"),
+        ModelSpec(model="placebo_2022_05", cutoff_month="2022-05"),
+        ModelSpec(model="placebo_2022_08", cutoff_month="2022-08"),
     ]
     outcomes = ["comments", "submissions", "comments_per_submission"]
 
@@ -279,6 +444,13 @@ def run_did_analysis(
         "submissions": run_event_study(panel, "submissions"),
         "comments_per_submission": run_event_study(panel, "comments_per_submission"),
     }
+    pretrend_tests = pd.DataFrame(
+        [run_pretrend_test(panel, outcome_column) for outcome_column in outcomes],
+    )
+    leave_one_out = pd.concat(
+        [run_leave_one_out(panel, outcome_column) for outcome_column in outcomes],
+        ignore_index=True,
+    )
 
     table_paths = {
         "summary": out_tables / "did-summary.csv",
@@ -287,6 +459,8 @@ def run_did_analysis(
         "event_comments_per_submission": (
             out_tables / "did-event-study-comments-per-submission.csv"
         ),
+        "pretrend_tests": out_tables / "did-pretrend-tests.csv",
+        "leave_one_out": out_tables / "did-leave-one-out.csv",
     }
     summary.to_csv(table_paths["summary"], index=False)
     event_studies["comments"].to_csv(table_paths["event_comments"], index=False)
@@ -295,6 +469,8 @@ def run_did_analysis(
         table_paths["event_comments_per_submission"],
         index=False,
     )
+    pretrend_tests.to_csv(table_paths["pretrend_tests"], index=False)
+    leave_one_out.to_csv(table_paths["leave_one_out"], index=False)
 
     figure_paths = {
         "trend_comments": out_figures / "did-trends-comments-health-vs-general.svg",

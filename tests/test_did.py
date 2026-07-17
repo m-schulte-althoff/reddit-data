@@ -13,6 +13,8 @@ from src.did import (
     prepare_analysis_frame,
     run_did_analysis,
     run_event_study,
+    run_leave_one_out,
+    run_pretrend_test,
 )
 
 
@@ -118,3 +120,36 @@ def test_run_did_analysis_is_deterministic(tmp_path: Path) -> None:
     pd.testing.assert_frame_equal(first.event_studies["comments"], second.event_studies["comments"])
     assert first.table_paths["summary"].exists()
     assert first.figure_paths["event_comments"].exists()
+    assert first.table_paths["pretrend_tests"].exists()
+    assert first.table_paths["leave_one_out"].exists()
+
+
+def test_did_safeguards_return_pretrend_and_leave_one_out_results() -> None:
+    panel = _make_synthetic_panel()
+
+    trend_result = estimate_twfe_did(
+        panel,
+        "comments",
+        spec=ModelSpec(model="community_trends", community_trends=True),
+    )
+    matched_result = estimate_twfe_did(
+        panel,
+        "comments",
+        spec=ModelSpec(model="matched", matched_pre_period=True),
+    )
+    pretrend = run_pretrend_test(panel, "comments")
+    leave_one_out = run_leave_one_out(panel, "comments")
+
+    assert trend_result["community_trends"] == 1
+    assert matched_result["matched_pre_period"] == 1
+    assert pretrend["n_leads"] > 0
+    assert len(leave_one_out) == panel["subreddit"].nunique()
+
+
+def test_prepare_analysis_frame_preserves_signed_outcomes_when_requested() -> None:
+    panel = _make_synthetic_panel()
+    panel["signed_index"] = -1.0
+
+    frame = prepare_analysis_frame(panel, "signed_index", log_transform=False)
+
+    assert frame["outcome"].eq(-1.0).all()

@@ -51,22 +51,34 @@ uv run python3 main.py interactions
 uv run python3 main.py interactions-finalize-cache --validate-only
 uv run python3 main.py interactions-finalize-cache
 
-# 14. Full first-pass WIP suite
+# 14. Interaction-outcome DiD diagnostics (uses existing panels)
+uv run python3 main.py interaction-outcomes
+
+# 15. Exploratory health-community growth profiles (uses existing panels)
+uv run python3 main.py community-profiles
+
+# 16. Stratified manual-coding sample for content-proxy validation
+uv run python3 main.py content-validation-sample --per-stratum 100
+
+# After completing the manual_* columns as 0/1 labels
+uv run python3 main.py content-validation-report
+
+# 17. Full first-pass WIP suite
 uv run python3 main.py wip
 
-# 15. Comment-depth / discursivity analysis
+# 18. Comment-depth / discursivity analysis
 uv run python3 main.py discursivity
 
-# 16. Engagement vs. post-GenAI decline analysis
+# 19. Engagement vs. post-GenAI decline analysis
 uv run python3 main.py resilience
 
-# 17. Repeat-helper concentration analysis
+# 20. Repeat-helper concentration analysis
 uv run python3 main.py helpers
 
-# 18. Compute descriptive statistics on raw data
+# 21. Compute descriptive statistics on raw data
 uv run python3 main.py analyse
 
-# 19. Reservoir-sample 500 records per type to CSV
+# 22. Reservoir-sample 500 records per type to CSV
 uv run python3 main.py sample
 ```
 
@@ -88,7 +100,8 @@ and switches to monthly torrents for 2024-01 onward.
 Edit `src/config.py` to change:
 
 - **`START_TS` / `END_EXCLUSIVE_TS`** — the exact UTC timestamp window.
-  Month ranges and epoch values are derived automatically.
+  Month ranges and epoch values are derived automatically. The current study
+  window is 2022-02 through 2025-12.
 - **`SAMPLE_SIZE`** / **`RANDOM_SEED`** — sample parameters (default: 500 / 42).
 - **`OUTPUT_ZSTD_LEVEL`** — compression level for filtered output.
 
@@ -107,7 +120,12 @@ Edit `src/config.py` to change:
 | `mechanisms` | Test whether pre-period helper concentration, depth, and responsiveness moderate post-GenAI change. |
 | `ai-mentions` | Count monthly mentions of ChatGPT, GPT, LLM, OpenAI, Copilot, Gemini, Claude, and related terms. |
 | `content-metrics` | Compute lightweight effort / support / experience / information text proxies per subreddit-month. |
+| `content-validation-sample` | Stream filtered records to produce a deterministic, stratified manual-coding sample for validating text proxies. |
+| `content-validation-report` | Summarize precision and recall after binary manual coding is entered in the validation sample. |
 | `interactions` | Compute monthly bond-vs-identity interaction metrics: unique/repeat/new authors, dyads, thread concentration, and bond/identity indices. |
+| `interactions-finalize-cache` | Finalize interaction outputs from an existing SQLite cache without rebuilding it. |
+| `interaction-outcomes` | Estimate DiD and event-study diagnostics for interaction metrics after the author-history warm-up period. |
+| `community-profiles` | Create explicitly exploratory health-community growth profiles linked to pre-period structure. |
 | `wip` | Run `panel` → `did` → `responsiveness` → `mechanisms` → `ai-mentions` → `content-metrics` → `interactions` and write concise key-result summaries. |
 | `describe` | Descriptive overview of filtered data: post counts, monthly trends, per-subreddit breakdowns (CSV + SVG). |
 | `discursivity` | Comment-depth / threading metrics from filtered data: mean depth, threading ratio per subreddit per month (CSV + SVG). |
@@ -136,7 +154,10 @@ Edit `src/config.py` to change:
 │   ├── mechanisms.py        # Moderator analysis for resilience mechanisms
 │   ├── ai_mentions.py       # Regex-based GenAI mention trends
 │   ├── content_metrics.py   # Lightweight content / support proxy metrics
+│   ├── content_validation.py # Stratified manual validation sample
 │   ├── interactions.py      # Bond-vs-identity interaction structure metrics
+│   ├── interaction_outcomes.py # DiD diagnostics for interaction metrics
+│   ├── community_profiles.py # Exploratory health-community profiles
 │   ├── discursivity.py      # Comment-depth & threading analysis
 │   ├── resilience.py        # Engagement vs. post-GenAI decline analysis
 │   ├── helpers.py           # Repeat-helper concentration analysis
@@ -178,6 +199,12 @@ uv run python3 main.py mechanisms
 uv run python3 main.py ai-mentions
 uv run python3 main.py content-metrics
 uv run python3 main.py interactions
+uv run python3 main.py interaction-outcomes
+uv run python3 main.py community-profiles
+# This scans filtered data; run only when preparing the manual coding set.
+uv run python3 main.py content-validation-sample --per-stratum 100
+# After manual coding:
+uv run python3 main.py content-validation-report
 uv run python3 main.py wip
 uv run python3 main.py describe
 uv run python3 main.py discursivity

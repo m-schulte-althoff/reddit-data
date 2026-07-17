@@ -25,6 +25,7 @@ from src.io_utils import (
     fingerprint_paths,
     is_deleted_removed,
     iter_month_range,
+    months_since,
     stream_zst,
 )
 from src.thread_prep import ThreadPrepConfig, prepare_thread_partitions
@@ -33,7 +34,9 @@ log = logging.getLogger(__name__)
 
 INTERACTIONS_MONTHLY_FILENAME = "interactions-monthly.csv"
 INTERACTIONS_METADATA_FILENAME = "interactions-metadata.json"
-INTERACTIONS_CACHE_VERSION = 1
+INTERACTIONS_CACHE_VERSION = 2
+GENAI_REFERENCE_MONTH = "2022-11"
+AUTHOR_HISTORY_WARMUP_MONTHS = 6
 INTERACTIONS_TABLES = frozenset({
     "submissions",
     "post_metrics",
@@ -648,6 +651,7 @@ def _build_monthly_frame(sqlite_path: Path) -> pd.DataFrame:
             return _empty_monthly_frame()
 
         rows: list[dict[str, Any]] = []
+        first_month = months[0]
         for index, subreddit in enumerate(subreddits, start=1):
             log.info("Aggregating interaction metrics for subreddit %d/%d: %s", index, len(subreddits), subreddit)
             author_metrics = _sqlite_author_monthly_metrics(conn, subreddit, months)
@@ -662,6 +666,9 @@ def _build_monthly_frame(sqlite_path: Path) -> pd.DataFrame:
                     "month": month,
                     "community_type": classify_subreddit(subreddit),
                     "unique_authors": int(author_row.get("unique_authors", 0)),
+                    "author_history_observed": int(
+                        months_since(month, reference=first_month) >= AUTHOR_HISTORY_WARMUP_MONTHS
+                    ),
                     "new_author_share": float(author_row.get("new_author_share", 0.0)),
                     "returning_author_share": float(author_row.get("returning_author_share", 0.0)),
                     "repeat_author_share": float(author_row.get("repeat_author_share", 0.0)),
@@ -934,6 +941,7 @@ def _empty_monthly_frame() -> pd.DataFrame:
         "month",
         "community_type",
         "unique_authors",
+        "author_history_observed",
         "new_author_share",
         "returning_author_share",
         "repeat_author_share",
@@ -950,19 +958,26 @@ def _empty_monthly_frame() -> pd.DataFrame:
 
 
 def _add_interaction_indices(monthly: pd.DataFrame) -> pd.DataFrame:
-    """Add standardized bond and identity indices to monthly interaction metrics."""
+    """Add pre-period-standardized bond and identity indices to monthly metrics."""
     active_mask = monthly["unique_authors"] > 0
+    reference_mask = (
+        active_mask
+        & monthly["author_history_observed"].astype(bool)
+        & (monthly["month"] < GENAI_REFERENCE_MONTH)
+    )
+    if not reference_mask.any():
+        reference_mask = active_mask & (monthly["month"] < GENAI_REFERENCE_MONTH)
     monthly["bond_index"] = (
-        _zscore(monthly["op_return_rate"], active_mask)
-        + _zscore(monthly["reciprocal_dyad_share"], active_mask)
-        + _zscore(monthly["repeat_dyad_share"], active_mask)
-        + _zscore(monthly["repeat_author_share"], active_mask)
+        _zscore(monthly["op_return_rate"], active_mask, reference_mask)
+        + _zscore(monthly["reciprocal_dyad_share"], active_mask, reference_mask)
+        + _zscore(monthly["repeat_dyad_share"], active_mask, reference_mask)
+        + _zscore(monthly["repeat_author_share"], active_mask, reference_mask)
     )
     monthly["identity_index"] = (
-        _zscore(monthly["unique_authors"].astype(float), active_mask)
-        + _zscore(monthly["new_author_share"], active_mask)
-        + _zscore(monthly["distributed_thread_share"], active_mask)
-        - _zscore(monthly["focused_thread_share"], active_mask)
+        _zscore(monthly["unique_authors"].astype(float), active_mask, reference_mask)
+        + _zscore(monthly["new_author_share"], active_mask, reference_mask)
+        + _zscore(monthly["distributed_thread_share"], active_mask, reference_mask)
+        - _zscore(monthly["focused_thread_share"], active_mask, reference_mask)
     )
     monthly.loc[~active_mask, ["bond_index", "identity_index"]] = 0.0
     return monthly
@@ -983,6 +998,7 @@ def _assemble_monthly_frame(
     dyad_metrics = _dyad_monthly_metrics(reply_edges)
 
     rows: list[dict[str, Any]] = []
+    first_month = months[0]
     for subreddit in subreddits:
         for month in months:
             author_row = author_metrics.get((subreddit, month), {})
@@ -993,6 +1009,9 @@ def _assemble_monthly_frame(
                 "month": month,
                 "community_type": classify_subreddit(subreddit),
                 "unique_authors": int(author_row.get("unique_authors", 0)),
+                "author_history_observed": int(
+                    months_since(month, reference=first_month) >= AUTHOR_HISTORY_WARMUP_MONTHS
+                ),
                 "new_author_share": float(author_row.get("new_author_share", 0.0)),
                 "returning_author_share": float(author_row.get("returning_author_share", 0.0)),
                 "repeat_author_share": float(author_row.get("repeat_author_share", 0.0)),
@@ -1138,16 +1157,20 @@ def _dyad_monthly_metrics(reply_edges: pd.DataFrame) -> dict[tuple[str, str], di
     return metrics
 
 
-def _zscore(series: pd.Series, active_mask: pd.Series) -> pd.Series:
+def _zscore(
+    series: pd.Series,
+    active_mask: pd.Series,
+    reference_mask: pd.Series,
+) -> pd.Series:
     result = pd.Series(0.0, index=series.index, dtype=float)
-    active_values = series.loc[active_mask].astype(float)
-    if active_values.empty:
+    reference_values = series.loc[reference_mask].astype(float)
+    if reference_values.empty:
         return result
-    std = float(active_values.std(ddof=0))
+    std = float(reference_values.std(ddof=0))
     if std == 0.0:
         return result
-    mean = float(active_values.mean())
-    result.loc[active_mask] = (active_values - mean) / std
+    mean = float(reference_values.mean())
+    result.loc[active_mask] = (series.loc[active_mask].astype(float) - mean) / std
     return result
 
 
@@ -1162,6 +1185,7 @@ def _plot_type_trend(frame: pd.DataFrame, value_col: str, ylabel: str, out_path:
         .groupby(["month", "community_type"], as_index=False)[value_col]
         .mean()
     )
+    plot_frame["month_dt"] = pd.to_datetime(plot_frame["month"], format="%Y-%m")
     fig, ax = plt.subplots(figsize=(11, 5.5))
     styles = {
         "health": {"label": "Health", "color": "#1b9e77", "marker": "o"},
@@ -1173,7 +1197,7 @@ def _plot_type_trend(frame: pd.DataFrame, value_col: str, ylabel: str, out_path:
             continue
         style = styles[community_type]
         ax.plot(
-            subset["month"],
+            subset["month_dt"],
             subset[value_col],
             color=style["color"],
             marker=style["marker"],

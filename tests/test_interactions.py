@@ -237,6 +237,7 @@ def test_run_interactions_analysis_computes_expected_metrics(tmp_path: Path) -> 
 
     assert float(askreddit_nov["bond_index"]) > float(depression_oct["bond_index"])
     assert float(depression_oct["identity_index"]) > float(askreddit_nov["identity_index"])
+    assert askreddit_nov["author_history_observed"] == 0
 
 
 def test_interactions_cache_invalidates_after_input_change(tmp_path: Path) -> None:

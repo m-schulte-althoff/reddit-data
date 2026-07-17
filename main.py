@@ -25,9 +25,17 @@ Commands:
     mechanisms     Estimate moderator/mechanism models from panel structure.
     ai-mentions    Count GenAI mentions in comments and submissions.
     content-metrics Compute simple content/effort/support proxy metrics.
+    content-validation-sample
+                    Create a stratified manual-coding sample for content proxies.
+    content-validation-report
+                    Summarize manually coded content-proxy validation results.
     interactions   Compute bond-vs-identity interaction structure metrics.
     interactions-finalize-cache
                     Finalize interaction outputs from an existing SQLite cache.
+    interaction-outcomes
+                    Estimate DiD diagnostics for interaction metrics.
+    community-profiles
+                    Build exploratory health-community growth profiles.
     wip            Run the full WIP suite and write key-result summaries.
     describe       Descriptive overview of filtered data (trends, per-subreddit).
     discursivity   Comment-depth / threading metrics from filtered data.
@@ -267,6 +275,34 @@ def cmd_content_metrics() -> int:
     return 0
 
 
+def cmd_content_validation_sample() -> int:
+    """Create a stratified manual-coding sample for content proxy validation."""
+    import argparse
+
+    from src.content_validation import DEFAULT_PER_STRATUM, create_content_validation_sample
+
+    parser = argparse.ArgumentParser(prog="content-validation-sample")
+    parser.add_argument(
+        "--per-stratum",
+        type=int,
+        default=DEFAULT_PER_STRATUM,
+        help="Reservoir sample size for each channel, community-type, and period stratum",
+    )
+    args = parser.parse_args(sys.argv[2:])
+    result = create_content_validation_sample(per_stratum=args.per_stratum)
+    logging.getLogger(__name__).info("Wrote %s", result.table_paths["sample"])
+    return 0
+
+
+def cmd_content_validation_report() -> int:
+    """Summarize manually coded content proxy labels."""
+    from src.content_validation import analyse_content_validation_sample
+
+    result = analyse_content_validation_sample()
+    logging.getLogger(__name__).info("Wrote %d validation result rows", len(result))
+    return 0
+
+
 def cmd_interactions() -> int:
     """Compute bond-vs-identity interaction structure metrics."""
     from src.interactions import run_interactions_analysis
@@ -299,6 +335,24 @@ def cmd_interactions_finalize_cache() -> int:
 
     result = finalize_interactions_cache()
     logging.getLogger(__name__).info("Wrote %s", result.table_paths["monthly"])
+    return 0
+
+
+def cmd_interaction_outcomes() -> int:
+    """Estimate DiD diagnostics for interaction metrics from cached outputs."""
+    from src.interaction_outcomes import run_interaction_outcomes_analysis
+
+    result = run_interaction_outcomes_analysis()
+    logging.getLogger(__name__).info("Wrote %s", result.table_paths["summary"])
+    return 0
+
+
+def cmd_community_profiles() -> int:
+    """Build exploratory health-community growth profiles from existing panels."""
+    from src.community_profiles import run_community_profile_analysis
+
+    result = run_community_profile_analysis()
+    logging.getLogger(__name__).info("Wrote %s", result.table_paths["profiles"])
     return 0
 
 
@@ -488,10 +542,26 @@ COMMANDS: dict[str, tuple[callable, str]] = {  # type: ignore[type-arg]
     "mechanisms": (cmd_mechanisms, "Moderator/mechanism models from panel structure"),
     "ai-mentions": (cmd_ai_mentions, "GenAI mention trends in comments and submissions"),
     "content-metrics": (cmd_content_metrics, "Simple content/effort/support proxy metrics"),
+    "content-validation-sample": (
+        cmd_content_validation_sample,
+        "Stratified manual-coding sample for content proxies",
+    ),
+    "content-validation-report": (
+        cmd_content_validation_report,
+        "Manual content-proxy validation summary",
+    ),
     "interactions": (cmd_interactions, "Bond-vs-identity interaction structure metrics"),
     "interactions-finalize-cache": (
         cmd_interactions_finalize_cache,
         "Finalize interaction outputs from an existing SQLite cache",
+    ),
+    "interaction-outcomes": (
+        cmd_interaction_outcomes,
+        "DiD diagnostics for interaction metrics",
+    ),
+    "community-profiles": (
+        cmd_community_profiles,
+        "Exploratory health-community growth profiles",
     ),
     "wip": (cmd_wip, "Run the full WIP suite and key-result summaries"),
     "describe": (cmd_describe, "Descriptive overview of filtered data"),
