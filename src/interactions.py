@@ -183,13 +183,15 @@ def finalize_interactions_cache(
     cache_dir: Path | None = None,
     tables_dir: Path | None = None,
     figures_dir: Path | None = None,
+    validate_cache: bool = True,
 ) -> InteractionsArtifacts:
     """Build interaction outputs from an existing SQLite cache without rebuilding it."""
     out_tables = tables_dir or TABLES_DIR
     out_figures = figures_dir or FIGURES_DIR
     out_cache = cache_dir or (OUTPUT_DIR / "cache")
     sqlite_path = out_cache / "interactions.sqlite"
-    validate_interactions_sqlite(sqlite_path)
+    if validate_cache:
+        validate_interactions_sqlite(sqlite_path)
 
     resolved_comment_paths = discover_filtered_paths("comments")
     resolved_submission_paths = discover_filtered_paths("submissions")
@@ -894,44 +896,42 @@ def _sqlite_dyad_monthly_metrics(
     conn: sqlite3.Connection,
     subreddit: str,
 ) -> dict[tuple[str, str], dict[str, float]]:
-    """Compute reciprocal and repeated dyad shares in SQLite."""
-    rows = conn.execute(
-        """
-        WITH directed AS (
-            SELECT month, source_author, target_author, edge_count
-            FROM reply_edges
-            WHERE subreddit = ?
-        ), pairs AS (
-            SELECT
-                month,
-                CASE WHEN source_author < target_author THEN source_author ELSE target_author END AS author_a,
-                CASE WHEN source_author < target_author THEN target_author ELSE source_author END AS author_b,
-                COUNT(*) AS directions,
-                SUM(edge_count) AS pair_edges
-            FROM directed
-            GROUP BY month, author_a, author_b
-        ), totals AS (
-            SELECT month, SUM(pair_edges) AS total_edges
-            FROM pairs
-            GROUP BY month
-        )
-        SELECT
-            pairs.month,
-            AVG(CASE WHEN directions >= 2 THEN 1.0 ELSE 0.0 END),
-            SUM(CASE WHEN pair_edges >= 2 THEN pair_edges ELSE 0 END) * 1.0 / totals.total_edges
-        FROM pairs
-        JOIN totals USING (month)
-        GROUP BY pairs.month
-        """,
+    """Compute dyad shares without SQLite temporary grouping tables.
+
+    The reply-edge key is ordered by subreddit and month. Reducing one month at
+    a time avoids large temporary CTE files while finalizing a large read-only
+    cache on a disk-constrained machine.
+    """
+    month_rows = conn.execute(
+        "SELECT DISTINCT month FROM reply_edges WHERE subreddit = ? ORDER BY month",
         (subreddit,),
     ).fetchall()
-    return {
-        (subreddit, str(row[0])): {
-            "reciprocal_dyad_share": float(row[1] or 0.0),
-            "repeat_dyad_share": float(row[2] or 0.0),
+    metrics: dict[tuple[str, str], dict[str, float]] = {}
+    for (month_value,) in month_rows:
+        month = str(month_value)
+        pairs: dict[tuple[str, str], list[int]] = {}
+        for source_author, target_author, edge_count in conn.execute(
+            """
+            SELECT source_author, target_author, edge_count
+            FROM reply_edges
+            WHERE subreddit = ? AND month = ?
+            """,
+            (subreddit, month),
+        ):
+            author_pair = tuple(sorted((str(source_author), str(target_author))))
+            directions, pair_edges = pairs.get(author_pair, [0, 0])
+            pairs[author_pair] = [directions + 1, pair_edges + int(edge_count)]
+
+        total_edges = sum(pair_edges for _, pair_edges in pairs.values())
+        reciprocal_pairs = sum(1 for directions, _ in pairs.values() if directions >= 2)
+        repeated_edges = sum(
+            pair_edges for _, pair_edges in pairs.values() if pair_edges >= 2
+        )
+        metrics[(subreddit, month)] = {
+            "reciprocal_dyad_share": reciprocal_pairs / len(pairs) if pairs else 0.0,
+            "repeat_dyad_share": repeated_edges / total_edges if total_edges else 0.0,
         }
-        for row in rows
-    }
+    return metrics
 
 
 def _empty_monthly_frame() -> pd.DataFrame:

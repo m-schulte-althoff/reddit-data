@@ -326,14 +326,22 @@ def cmd_interactions_finalize_cache() -> int:
         action="store_true",
         help="Validate the existing SQLite cache without building outputs",
     )
+    parser.add_argument(
+        "--skip-integrity-check",
+        action="store_true",
+        help="Skip the full SQLite quick_check when retrying an unchanged cache",
+    )
     args = parser.parse_args(sys.argv[2:])
     sqlite_path = OUTPUT_DIR / "cache" / "interactions.sqlite"
-    validate_interactions_sqlite(sqlite_path)
-    logging.getLogger(__name__).info("Validated interaction SQLite cache read-only: %s", sqlite_path)
+    if not args.skip_integrity_check:
+        validate_interactions_sqlite(sqlite_path)
+        logging.getLogger(__name__).info("Validated interaction SQLite cache read-only: %s", sqlite_path)
     if args.validate_only:
+        if args.skip_integrity_check:
+            raise ValueError("--validate-only cannot be combined with --skip-integrity-check")
         return 0
 
-    result = finalize_interactions_cache()
+    result = finalize_interactions_cache(validate_cache=not args.skip_integrity_check)
     logging.getLogger(__name__).info("Wrote %s", result.table_paths["monthly"])
     return 0
 

@@ -352,6 +352,23 @@ def test_low_memory_monthly_aggregation_matches_full_frame_assembly(tmp_path: Pa
     assert actual.to_dict("records") == expected.to_dict("records")
 
 
+def test_sqlite_dyad_metrics_match_expected_pair_aggregation(tmp_path: Path) -> None:
+    comments_path, submissions_path, tables_dir, figures_dir, cache_dir = _make_processed(tmp_path)
+    run_interactions_analysis(
+        comment_paths=[comments_path],
+        submission_paths=[submissions_path],
+        tables_dir=tables_dir,
+        figures_dir=figures_dir,
+        cache_dir=cache_dir,
+    )
+    sqlite_path = cache_dir / "interactions.sqlite"
+
+    actual = _build_monthly_frame(sqlite_path).set_index(["subreddit", "month"])
+
+    assert round(float(actual.loc[("askreddit", "2022-11"), "reciprocal_dyad_share"]), 4) == round(1 / 3, 4)
+    assert round(float(actual.loc[("askreddit", "2022-11"), "repeat_dyad_share"]), 4) == 0.6
+
+
 def test_run_interactions_analysis_partitioned_matches_default(tmp_path: Path) -> None:
     comments_path, submissions_path, tables_dir, figures_dir, cache_dir = _make_processed(tmp_path)
     config = normalize_thread_prep_config(2, cache_dir=tmp_path / "thread-prep-cache")

@@ -243,6 +243,15 @@ uv run python3 main.py interactions-finalize-cache --validate-only
 uv run python3 main.py interactions-finalize-cache
 ```
 
+If a previously validated finalization run stops before writing its outputs,
+retrying the unchanged cache can skip the expensive full SQLite integrity scan:
+
+```bash
+uv run python3 main.py interactions-finalize-cache --skip-integrity-check
+```
+
+Use this flag only when the cache has not changed since a successful validation.
+
 Detach with `Ctrl-b` followed by `d`; reattach later with `tmux attach -t reddit-interactions`.
 The finalizer aggregates one subreddit at a time and logs its progress; this keeps
 the large SQLite cache read-only and avoids loading the complete cache into memory.
