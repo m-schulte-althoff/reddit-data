@@ -8,7 +8,7 @@ from pathlib import Path
 import pandas as pd
 
 from src.config import TABLES_DIR
-from src.did import ModelSpec, estimate_twfe_did, run_event_study, run_pretrend_test
+from src.did import benjamini_hochberg, ModelSpec, estimate_twfe_did, run_event_study, run_pretrend_test
 from src.panel import ensure_monthly_panel
 
 INTERACTION_OUTCOMES = (
@@ -73,6 +73,9 @@ def run_interaction_outcomes_analysis(
         event_frames.append(run_event_study(frame, outcome, log_transform=False))
 
     summary = pd.DataFrame(summary_rows).sort_values(["outcome", "model"], kind="stable")
+    summary["p_value_fdr"] = summary.groupby("model", group_keys=False)["p_value"].apply(
+        benjamini_hochberg,
+    )
     pretrend_tests = pd.DataFrame(pretrend_rows).sort_values("outcome", kind="stable")
     event_studies = pd.concat(event_frames, ignore_index=True)
     table_paths = {

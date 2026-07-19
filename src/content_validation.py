@@ -38,6 +38,7 @@ def analyse_content_validation_sample(
     resolved_sample = sample_path or (out_tables / "content-validation-sample.csv")
     sample = pd.read_csv(resolved_sample, keep_default_na=False)
     rows: list[dict[str, int | float | str]] = []
+    coverage_rows: list[dict[str, int | float | str]] = []
     for label in ("question", "experience", "support", "medical"):
         proxy_column = f"proxy_{label}"
         manual_column = f"manual_{label}"
@@ -45,6 +46,16 @@ def analyse_content_validation_sample(
         invalid = manual.notna() & ~manual.isin([0, 1])
         if invalid.any():
             raise ValueError(f"{manual_column} must contain only 0, 1, or blanks")
+        for (kind, community_type), group in sample.groupby(["kind", "community_type"], sort=True):
+            coded_count = int(manual.loc[group.index].notna().sum())
+            coverage_rows.append({
+                "label": label,
+                "kind": str(kind),
+                "community_type": str(community_type),
+                "n_sampled": int(len(group)),
+                "n_coded": coded_count,
+                "coding_rate": coded_count / len(group) if len(group) else 0.0,
+            })
         coded = sample.loc[manual.notna(), ["kind", "community_type", proxy_column]].copy()
         coded[manual_column] = manual.loc[manual.notna()].astype(int)
         for (kind, community_type), group in coded.groupby(["kind", "community_type"], sort=True):
@@ -66,6 +77,10 @@ def analyse_content_validation_sample(
             })
     result = pd.DataFrame(rows)
     result.to_csv(out_tables / "content-validation-report.csv", index=False)
+    pd.DataFrame(coverage_rows).to_csv(
+        out_tables / "content-validation-coding-coverage.csv",
+        index=False,
+    )
     return result
 
 

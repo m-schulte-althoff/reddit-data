@@ -73,5 +73,6 @@ def test_interaction_outcomes_excludes_history_warmup_rows(tmp_path: Path) -> No
         "multi_actor_thread_share",
         "focused_thread_share",
     }
-    assert result.pretrend_tests["n_leads"].eq(2).all()
+    assert result.pretrend_tests["n_leads"].eq(3).all()
     assert result.table_paths["event_studies"].exists()
+    assert result.summary["p_value_fdr"].between(0.0, 1.0).all()

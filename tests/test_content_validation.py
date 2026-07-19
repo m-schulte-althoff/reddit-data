@@ -58,3 +58,4 @@ def test_content_validation_sample_is_stratified_and_coding_ready(tmp_path: Path
 
     assert report["n_coded"].gt(0).all()
     assert (tmp_path / "tables" / "content-validation-report.csv").exists()
+    assert (tmp_path / "tables" / "content-validation-coding-coverage.csv").exists()

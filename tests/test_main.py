@@ -45,3 +45,26 @@ def test_cmd_filter_subreddit_passes_kind(monkeypatch) -> None:
 
     assert main.cmd_filter_subreddit() == 0
     assert captured["kinds"] == ("submissions",)
+
+
+def test_cmd_support_capacity_passes_window_months(monkeypatch, tmp_path: Path) -> None:
+    captured: dict[str, int] = {}
+
+    class Result:
+        table_paths = {"monthly": tmp_path / "support-capacity-monthly.csv"}
+
+    def fake_run_support_capacity_analysis(*, window_months: int) -> Result:
+        captured["window_months"] = window_months
+        return Result()
+
+    from src import support_capacity as support_capacity_module
+
+    monkeypatch.setattr(
+        support_capacity_module,
+        "run_support_capacity_analysis",
+        fake_run_support_capacity_analysis,
+    )
+    monkeypatch.setattr(sys, "argv", ["main.py", "support-capacity", "--window-months", "24"])
+
+    assert main.cmd_support_capacity() == 0
+    assert captured["window_months"] == 24

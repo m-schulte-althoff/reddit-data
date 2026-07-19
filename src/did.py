@@ -21,7 +21,8 @@ from src.thread_prep import ThreadPrepConfig
 
 log = logging.getLogger(__name__)
 
-BASELINE_CUTOFF = "2022-11"
+BASELINE_CUTOFF = "2022-12"
+TRANSITION_MONTHS = frozenset({"2022-11"})
 EVENT_STUDY_LOWER_BIN = -6
 EVENT_STUDY_UPPER_BIN = 24
 
@@ -51,6 +52,20 @@ class DidAnalysisArtifacts:
     figure_paths: dict[str, Path]
 
 
+def benjamini_hochberg(p_values: pd.Series) -> pd.Series:
+    """Return Benjamini-Hochberg adjusted p-values in input order."""
+    result = pd.Series(float("nan"), index=p_values.index, dtype=float)
+    valid = p_values.dropna()
+    if valid.empty:
+        return result
+    ranked = valid.sort_values()
+    total = len(ranked)
+    adjusted = ranked * total / pd.Series(range(1, total + 1), index=ranked.index)
+    adjusted = adjusted.iloc[::-1].cummin().iloc[::-1].clip(upper=1.0)
+    result.loc[adjusted.index] = adjusted
+    return result
+
+
 def load_panel_dataframe(
     panel_path: Path | None = None,
     *,
@@ -75,6 +90,7 @@ def prepare_analysis_frame(
     winsorize: bool = False,
     matched_pre_period: bool = False,
     omit_subreddit: str | None = None,
+    exclude_transition: bool = True,
     log_transform: bool = True,
 ) -> pd.DataFrame:
     """Prepare a regression-ready frame for one outcome and specification."""
@@ -82,6 +98,8 @@ def prepare_analysis_frame(
         panel["community_type"].isin(["general", "health"]),
     ].copy()
     frame = frame.sort_values(["subreddit", "month"], kind="stable")
+    if exclude_transition:
+        frame = frame.loc[~frame["month"].isin(TRANSITION_MONTHS)].copy()
 
     if balanced_only:
         month_count = frame["month"].nunique()
@@ -265,6 +283,45 @@ def _apply_pre_period_match_weights(
     return frame.loc[frame["match_weight"] > 0].copy()
 
 
+def matching_balance_diagnostics(
+    panel: pd.DataFrame,
+    outcome_column: str,
+    *,
+    cutoff_month: str = BASELINE_CUTOFF,
+) -> pd.DataFrame:
+    """Summarize pre-period covariate balance before and after nearest matching."""
+    frame = prepare_analysis_frame(panel, outcome_column, cutoff_month=cutoff_month)
+    weighted = _apply_pre_period_match_weights(frame.copy(), cutoff_month)
+    rows: list[dict[str, float | str]] = []
+    for label, candidate, weight_column in (
+        ("unmatched", frame, None),
+        ("matched", weighted, "match_weight"),
+    ):
+        pre = candidate.loc[candidate["month"] < cutoff_month]
+        for metric in ("raw_outcome", "comments", "submissions", "comments_per_submission"):
+            health = pre.loc[pre["health"] == 1, metric]
+            general = pre.loc[pre["health"] == 0, [metric, "match_weight"]]
+            health_mean = float(health.mean())
+            if weight_column is None:
+                general_mean = float(general[metric].mean())
+            else:
+                general_mean = float(
+                    (general[metric] * general[weight_column]).sum() / general[weight_column].sum()
+                )
+            pooled_sd = float(pd.concat([health, general[metric]]).std(ddof=0))
+            rows.append({
+                "outcome": outcome_column,
+                "sample": label,
+                "metric": metric,
+                "health_pre_mean": health_mean,
+                "general_pre_mean": general_mean,
+                "standardized_mean_difference": (
+                    (health_mean - general_mean) / pooled_sd if pooled_sd else 0.0
+                ),
+            })
+    return pd.DataFrame(rows)
+
+
 def run_pretrend_test(
     panel: pd.DataFrame,
     outcome_column: str,
@@ -360,8 +417,9 @@ def run_event_study(
 
     terms: list[str] = []
     column_names: dict[int, str] = {}
+    reference_event_time = -2 if "2022-11" in TRANSITION_MONTHS and cutoff_month == BASELINE_CUTOFF else -1
     for event_time in sorted(frame["event_bin"].unique()):
-        if int(event_time) == -1:
+        if int(event_time) == reference_event_time:
             continue
         column_name = f"health_event_{_event_token(int(event_time))}"
         frame[column_name] = ((frame["event_bin"] == event_time) & (frame["health"] == 1)).astype(int)
@@ -425,6 +483,7 @@ def run_did_analysis(
         ModelSpec(model="winsorized_1_99", winsorize=True),
         ModelSpec(model="community_specific_trends", community_trends=True),
         ModelSpec(model="matched_pre_period", matched_pre_period=True),
+        ModelSpec(model="cutoff_2023_01", cutoff_month="2023-01"),
         ModelSpec(model="cutoff_2023_03", cutoff_month="2023-03"),
         ModelSpec(model="cutoff_2023_07", cutoff_month="2023-07"),
         ModelSpec(model="placebo_2022_05", cutoff_month="2022-05"),
@@ -451,6 +510,10 @@ def run_did_analysis(
         [run_leave_one_out(panel, outcome_column) for outcome_column in outcomes],
         ignore_index=True,
     )
+    matching_balance = pd.concat(
+        [matching_balance_diagnostics(panel, outcome_column) for outcome_column in outcomes],
+        ignore_index=True,
+    )
 
     table_paths = {
         "summary": out_tables / "did-summary.csv",
@@ -461,6 +524,7 @@ def run_did_analysis(
         ),
         "pretrend_tests": out_tables / "did-pretrend-tests.csv",
         "leave_one_out": out_tables / "did-leave-one-out.csv",
+        "matching_balance": out_tables / "did-matching-balance.csv",
     }
     summary.to_csv(table_paths["summary"], index=False)
     event_studies["comments"].to_csv(table_paths["event_comments"], index=False)
@@ -471,6 +535,7 @@ def run_did_analysis(
     )
     pretrend_tests.to_csv(table_paths["pretrend_tests"], index=False)
     leave_one_out.to_csv(table_paths["leave_one_out"], index=False)
+    matching_balance.to_csv(table_paths["matching_balance"], index=False)
 
     figure_paths = {
         "trend_comments": out_figures / "did-trends-comments-health-vs-general.svg",

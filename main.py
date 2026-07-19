@@ -34,6 +34,8 @@ Commands:
                     Finalize interaction outputs from an existing SQLite cache.
     interaction-outcomes
                     Estimate DiD diagnostics for interaction metrics.
+    support-capacity
+                    Analyze rolling helper capacity and contributor retention.
     community-profiles
                     Build exploratory health-community growth profiles.
     wip            Run the full WIP suite and write key-result summaries.
@@ -355,6 +357,25 @@ def cmd_interaction_outcomes() -> int:
     return 0
 
 
+def cmd_support_capacity() -> int:
+    """Analyze rolling helper capacity and newcomer/contributor retention."""
+    import argparse
+
+    from src.support_capacity import DEFAULT_WINDOW_MONTHS, run_support_capacity_analysis
+
+    parser = argparse.ArgumentParser(prog="support-capacity")
+    parser.add_argument(
+        "--window-months",
+        type=int,
+        default=DEFAULT_WINDOW_MONTHS,
+        help="Trailing helper-activity window in months",
+    )
+    args = parser.parse_args(sys.argv[2:])
+    result = run_support_capacity_analysis(window_months=args.window_months)
+    logging.getLogger(__name__).info("Wrote %s", result.table_paths["monthly"])
+    return 0
+
+
 def cmd_community_profiles() -> int:
     """Build exploratory health-community growth profiles from existing panels."""
     from src.community_profiles import run_community_profile_analysis
@@ -566,6 +587,10 @@ COMMANDS: dict[str, tuple[callable, str]] = {  # type: ignore[type-arg]
     "interaction-outcomes": (
         cmd_interaction_outcomes,
         "DiD diagnostics for interaction metrics",
+    ),
+    "support-capacity": (
+        cmd_support_capacity,
+        "Rolling helper capacity and contributor retention analysis",
     ),
     "community-profiles": (
         cmd_community_profiles,

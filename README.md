@@ -54,7 +54,10 @@ uv run python3 main.py interactions-finalize-cache
 # 14. Interaction-outcome DiD diagnostics (uses existing panels)
 uv run python3 main.py interaction-outcomes
 
-# 15. Exploratory health-community growth profiles (uses existing panels)
+# 15. Rolling helper capacity, newcomer reception, and retention metrics
+uv run python3 main.py support-capacity --window-months 12
+
+# 16. Exploratory health-community growth profiles (uses existing panels)
 uv run python3 main.py community-profiles
 
 # 16. Stratified manual-coding sample for content-proxy validation
@@ -125,6 +128,7 @@ Edit `src/config.py` to change:
 | `interactions` | Compute monthly bond-vs-identity interaction metrics: unique/repeat/new authors, dyads, thread concentration, and bond/identity indices. |
 | `interactions-finalize-cache` | Finalize interaction outputs from an existing SQLite cache without rebuilding it. |
 | `interaction-outcomes` | Estimate DiD and event-study diagnostics for interaction metrics after the author-history warm-up period. |
+| `support-capacity` | Analyze rolling 12-month helper capacity/concentration, newcomer reply receipt and return, and contributor/helper retention from the interaction cache. |
 | `community-profiles` | Create explicitly exploratory health-community growth profiles linked to pre-period structure. |
 | `wip` | Run `panel` → `did` → `responsiveness` → `mechanisms` → `ai-mentions` → `content-metrics` → `interactions` and write concise key-result summaries. |
 | `describe` | Descriptive overview of filtered data: post counts, monthly trends, per-subreddit breakdowns (CSV + SVG). |
@@ -200,6 +204,7 @@ uv run python3 main.py ai-mentions
 uv run python3 main.py content-metrics
 uv run python3 main.py interactions
 uv run python3 main.py interaction-outcomes
+uv run python3 main.py support-capacity --window-months 12
 uv run python3 main.py community-profiles
 # This scans filtered data; run only when preparing the manual coding set.
 uv run python3 main.py content-validation-sample --per-stratum 100
@@ -215,6 +220,30 @@ uv run python3 main.py sample
 ```
 
 All outputs are deterministic (fixed random seed, stable sorting).
+
+## Validation protocol
+
+The regex-based content measures are exploratory until manually validated. Code
+each `manual_*` field as `0` or `1`; leave uncertain or unavailable records
+blank. Use two independent coding passes for a documented subset before
+reconciling labels. `content-validation-report` writes proxy precision/recall,
+and `content-validation-coding-coverage.csv` reports completed coding by label,
+record type, and community type.
+
+## Analysis design
+
+The primary post-GenAI cutoff is December 2022. November 2022 is excluded as a
+transition month because ChatGPT launched at its end. The DiD output includes
+January, March, and July 2023 cutoff sensitivities, pre-period placebos, a
+matched comparison specification, and `did-matching-balance.csv` for pre-period
+balance assessment. The causal interpretation remains contingent on credible
+pre-trends and balance diagnostics.
+
+The primary support-capacity outcomes are newcomer reply receipt, newcomer and
+contributor return at 1/3/6 months, rolling active/effective helpers, helper
+return, and helper-set overlap. Interaction-outcome reports include
+Benjamini-Hochberg FDR-adjusted p-values within each model family; secondary and
+exploratory outcomes should be interpreted accordingly.
 
 ### Optional low-memory thread prep
 

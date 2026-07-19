@@ -8,6 +8,7 @@ import pandas as pd
 import pytest
 
 from src.did import (
+    BASELINE_CUTOFF,
     ModelSpec,
     estimate_twfe_did,
     prepare_analysis_frame,
@@ -106,6 +107,15 @@ def test_balanced_panel_filter_removes_unbalanced_subreddit() -> None:
     assert "general_0" not in set(balanced["subreddit"])
 
 
+def test_prepare_analysis_frame_excludes_november_transition_month() -> None:
+    panel = _make_synthetic_panel()
+
+    frame = prepare_analysis_frame(panel, "comments")
+
+    assert BASELINE_CUTOFF == "2022-12"
+    assert "2022-11" not in set(frame["month"])
+
+
 def test_run_did_analysis_is_deterministic(tmp_path: Path) -> None:
     panel_path = tmp_path / "panel.csv"
     tables_dir = tmp_path / "tables"
@@ -122,6 +132,7 @@ def test_run_did_analysis_is_deterministic(tmp_path: Path) -> None:
     assert first.figure_paths["event_comments"].exists()
     assert first.table_paths["pretrend_tests"].exists()
     assert first.table_paths["leave_one_out"].exists()
+    assert first.table_paths["matching_balance"].exists()
 
 
 def test_did_safeguards_return_pretrend_and_leave_one_out_results() -> None:
