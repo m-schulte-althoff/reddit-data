@@ -5,17 +5,17 @@ from __future__ import annotations
 import json
 import logging
 import sqlite3
+from collections import Counter, deque
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterator
 
 import pandas as pd
 
 from src.config import OUTPUT_DIR, TABLES_DIR
 from src.did import BASELINE_CUTOFF, TRANSITION_MONTHS
 from src.helpers import classify_subreddit
-from src.interactions import validate_interactions_sqlite
 from src.io_utils import iter_month_range
 
 log = logging.getLogger(__name__)
@@ -179,11 +179,12 @@ def run_support_capacity_analysis(
     tables_dir: Path | None = None,
     window_months: int = DEFAULT_WINDOW_MONTHS,
 ) -> SupportCapacityArtifacts:
-    """Read the interaction cache and write support-capacity analysis tables."""
+    """Stream SQL aggregates from the interaction cache into analysis tables."""
     resolved_sqlite = sqlite_path or (OUTPUT_DIR / "cache" / "interactions.sqlite")
-    validate_interactions_sqlite(resolved_sqlite)
-    tables = _load_cache_tables(resolved_sqlite)
-    monthly = build_support_capacity_monthly(**tables, window_months=window_months)
+    if window_months <= 0:
+        raise ValueError("window_months must be positive")
+    _validate_support_capacity_cache(resolved_sqlite)
+    monthly = _build_support_capacity_from_sqlite(resolved_sqlite, window_months=window_months)
     summary = summarize_support_capacity(monthly)
     out_tables = tables_dir or TABLES_DIR
     out_tables.mkdir(parents=True, exist_ok=True)
@@ -207,26 +208,269 @@ def run_support_capacity_analysis(
     return SupportCapacityArtifacts(monthly=monthly, community_summary=summary, table_paths=paths)
 
 
-def _load_cache_tables(sqlite_path: Path) -> dict[str, pd.DataFrame]:
-    """Load only the interaction-cache columns needed for support capacity."""
+def _build_support_capacity_from_sqlite(sqlite_path: Path, *, window_months: int) -> pd.DataFrame:
+    """Build monthly measures with bounded memory from SQLite aggregates."""
     conn = sqlite3.connect(f"file:{sqlite_path}?mode=ro", uri=True)
     try:
-        return {
-            "author_activity": pd.read_sql_query(
-                "SELECT subreddit, month, author FROM author_activity", conn,
-            ),
-            "submissions": pd.read_sql_query(
-                "SELECT submission_id, subreddit, month, author FROM submissions", conn,
-            ),
-            "post_metrics": pd.read_sql_query(
-                "SELECT submission_id, num_comments_observed FROM post_metrics", conn,
-            ),
-            "helper_counts": pd.read_sql_query(
-                "SELECT submission_id, commenter, is_non_op, comment_count FROM helper_counts", conn,
-            ),
-        }
+        subreddits = [str(row[0]) for row in conn.execute(
+            "SELECT DISTINCT subreddit FROM author_activity ORDER BY subreddit",
+        )]
+        rows: list[dict[str, Any]] = []
+        for index, subreddit in enumerate(subreddits, start=1):
+            log.info("Aggregating support capacity for subreddit %d/%d: %s", index, len(subreddits), subreddit)
+            rows.extend(_sqlite_subreddit_rows(conn, subreddit, window_months=window_months))
     finally:
         conn.close()
+    return pd.DataFrame(rows).sort_values(["subreddit", "month"], kind="stable").reset_index(drop=True)
+
+
+def _validate_support_capacity_cache(sqlite_path: Path) -> None:
+    """Confirm that a readable cache exposes the tables used by this analysis."""
+    if not sqlite_path.is_file():
+        raise FileNotFoundError(f"Interaction SQLite cache not found: {sqlite_path}")
+    conn = sqlite3.connect(f"file:{sqlite_path}?mode=ro", uri=True)
+    try:
+        tables = {
+            str(row[0])
+            for row in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'")
+        }
+        required = {"author_activity", "submissions", "post_metrics", "helper_counts"}
+        missing = required - tables
+        if missing:
+            raise ValueError(f"Interaction SQLite cache is missing tables: {', '.join(sorted(missing))}")
+    except sqlite3.DatabaseError as exc:
+        raise ValueError(f"Could not read interaction SQLite cache: {sqlite_path}") from exc
+    finally:
+        conn.close()
+
+
+def _sqlite_subreddit_rows(
+    conn: sqlite3.Connection,
+    subreddit: str,
+    *,
+    window_months: int,
+) -> list[dict[str, Any]]:
+    """Return one subreddit's monthly rows from compact SQL aggregates."""
+    months = _sqlite_subreddit_months(conn, subreddit)
+    if not months:
+        return []
+    author_metrics = _sqlite_author_metrics(conn, subreddit)
+    newcomer_posts = _sqlite_newcomer_posts(conn, subreddit)
+    helper_returns = _sqlite_helper_returns(conn, subreddit)
+    helper_months = iter(_iter_helper_months(conn, subreddit))
+    next_helper_month = next(helper_months, None)
+    helper_windows: deque[dict[str, float]] = deque()
+    rolling_weights: Counter[str] = Counter()
+    rows: list[dict[str, Any]] = []
+    for index, month in enumerate(months):
+        current_helpers: dict[str, float] = {}
+        if next_helper_month is not None and next_helper_month[0] == month:
+            current_helpers = next_helper_month[1]
+            next_helper_month = next(helper_months, None)
+        helper_windows.append(current_helpers)
+        rolling_weights.update(current_helpers)
+        expired_helpers: dict[str, float] = {}
+        if len(helper_windows) > window_months:
+            expired_helpers = helper_windows.popleft()
+            _subtract_weights(rolling_weights, expired_helpers)
+        previous_helper_weights = Counter(rolling_weights)
+        _subtract_weights(previous_helper_weights, current_helpers)
+        if index >= window_months:
+            previous_helper_weights.update(expired_helpers)
+        author_row = author_metrics.get(month, {})
+        post_row = newcomer_posts.get(month, {})
+        row: dict[str, Any] = {
+            "subreddit": subreddit,
+            "month": month,
+            "community_type": classify_subreddit(subreddit),
+            "active_contributors": int(author_row.get("active_contributors", 0)),
+            "new_contributors": int(author_row.get("new_contributors", 0)),
+            "newcomer_share": float(author_row.get("newcomer_share", 0.0)),
+            "active_helpers": len(current_helpers),
+            "rolling_window_months": window_months,
+            "rolling_active_helpers": len(rolling_weights),
+            "rolling_effective_helpers": _effective_count(dict(rolling_weights)),
+            "rolling_top5_helper_share": _top_k_share(dict(rolling_weights), 5),
+            "rolling_helper_jaccard": _jaccard(set(rolling_weights), set(previous_helper_weights)),
+            "newcomer_submissions": int(post_row.get("newcomer_submissions", 0)),
+            "newcomer_reply_rate": float(post_row.get("newcomer_reply_rate", 0.0)),
+        }
+        for horizon in RETENTION_HORIZONS:
+            row[f"newcomer_return_{horizon}m"] = float(
+                author_row.get(f"newcomer_return_{horizon}m", 0.0),
+            )
+            row[f"contributor_return_{horizon}m"] = float(
+                author_row.get(f"contributor_return_{horizon}m", 0.0),
+            )
+            row[f"helper_return_{horizon}m"] = float(
+                helper_returns.get(month, {}).get(f"helper_return_{horizon}m", 0.0),
+            )
+        rows.append(row)
+    return rows
+
+
+def _sqlite_subreddit_months(conn: sqlite3.Connection, subreddit: str) -> list[str]:
+    """Return a continuous month range for one subreddit."""
+    row = conn.execute(
+        "SELECT MIN(month), MAX(month) FROM author_activity WHERE subreddit = ?",
+        (subreddit,),
+    ).fetchone()
+    if row is None or row[0] is None or row[1] is None:
+        return []
+    return iter_month_range(str(row[0]), str(row[1]))
+
+
+def _sqlite_author_metrics(conn: sqlite3.Connection, subreddit: str) -> dict[str, dict[str, float | int]]:
+    """Compute contributor and newcomer retention measures entirely in SQLite."""
+    horizon_columns = ",\n            ".join(
+        f"""CAST(SUM(CASE WHEN EXISTS (
+                SELECT 1 FROM author_months future
+                WHERE future.author = current.author
+                  AND future.month = strftime('%Y-%m', date(current.month || '-01', '+{horizon} months'))
+            ) THEN 1 ELSE 0 END) AS REAL) / COUNT(*) AS contributor_return_{horizon}m,
+            CAST(SUM(CASE WHEN current.month = first_month AND EXISTS (
+                SELECT 1 FROM author_months future
+                WHERE future.author = current.author
+                  AND future.month = strftime('%Y-%m', date(current.month || '-01', '+{horizon} months'))
+            ) THEN 1 ELSE 0 END) AS REAL) /
+                NULLIF(SUM(CASE WHEN current.month = first_month THEN 1 ELSE 0 END), 0) AS newcomer_return_{horizon}m"""
+        for horizon in RETENTION_HORIZONS
+    )
+    rows = conn.execute(
+        f"""
+        WITH author_months AS (
+            SELECT month, author FROM author_activity WHERE subreddit = ?
+        ), first_months AS (
+            SELECT author, MIN(month) AS first_month FROM author_months GROUP BY author
+        )
+        SELECT
+            current.month,
+            COUNT(*) AS active_contributors,
+            SUM(CASE WHEN current.month = first_month THEN 1 ELSE 0 END) AS new_contributors,
+            CAST(SUM(CASE WHEN current.month = first_month THEN 1 ELSE 0 END) AS REAL) / COUNT(*) AS newcomer_share,
+            {horizon_columns}
+        FROM author_months current
+        JOIN first_months USING (author)
+        GROUP BY current.month
+        ORDER BY current.month
+        """,
+        (subreddit,),
+    ).fetchall()
+    columns = ["month", "active_contributors", "new_contributors", "newcomer_share"]
+    for horizon in RETENTION_HORIZONS:
+        columns.extend([f"contributor_return_{horizon}m", f"newcomer_return_{horizon}m"])
+    return {
+        str(row[0]): {
+            column: 0.0 if value is None else value
+            for column, value in zip(columns[1:], row[1:], strict=True)
+        }
+        for row in rows
+    }
+
+
+def _sqlite_newcomer_posts(conn: sqlite3.Connection, subreddit: str) -> dict[str, dict[str, float | int]]:
+    """Aggregate reply receipt for submissions made in a user's first month."""
+    rows = conn.execute(
+        """
+        WITH first_months AS (
+            SELECT author, MIN(month) AS first_month
+            FROM author_activity
+            WHERE subreddit = ?
+            GROUP BY author
+        )
+        SELECT
+            s.month,
+            COUNT(*) AS newcomer_submissions,
+            CAST(SUM(CASE WHEN p.num_comments_observed > 0 THEN 1 ELSE 0 END) AS REAL) / COUNT(*) AS newcomer_reply_rate
+        FROM submissions s
+        JOIN first_months f ON f.author = s.author AND f.first_month = s.month
+        LEFT JOIN post_metrics p ON p.submission_id = s.submission_id
+        WHERE s.subreddit = ?
+        GROUP BY s.month
+        ORDER BY s.month
+        """,
+        (subreddit, subreddit),
+    ).fetchall()
+    return {
+        str(month): {
+            "newcomer_submissions": int(count),
+            "newcomer_reply_rate": float(rate),
+        }
+        for month, count, rate in rows
+    }
+
+
+def _sqlite_helper_returns(conn: sqlite3.Connection, subreddit: str) -> dict[str, dict[str, float]]:
+    """Compute helper retention at each horizon from distinct helper-month rows."""
+    horizons = ",\n            ".join(
+        f"""CAST(SUM(CASE WHEN EXISTS (
+                SELECT 1 FROM helper_months future
+                WHERE future.commenter = current.commenter
+                  AND future.month = strftime('%Y-%m', date(current.month || '-01', '+{horizon} months'))
+            ) THEN 1 ELSE 0 END) AS REAL) / COUNT(*) AS helper_return_{horizon}m"""
+        for horizon in RETENTION_HORIZONS
+    )
+    rows = conn.execute(
+        f"""
+        WITH helper_months AS (
+            SELECT s.month, h.commenter
+            FROM helper_counts h
+            JOIN submissions s ON s.submission_id = h.submission_id
+            WHERE s.subreddit = ? AND h.is_non_op = 1
+            GROUP BY s.month, h.commenter
+        )
+        SELECT current.month, {horizons}
+        FROM helper_months current
+        GROUP BY current.month
+        ORDER BY current.month
+        """,
+        (subreddit,),
+    ).fetchall()
+    columns = [f"helper_return_{horizon}m" for horizon in RETENTION_HORIZONS]
+    return {
+        str(row[0]): {
+            column: 0.0 if value is None else float(value)
+            for column, value in zip(columns, row[1:], strict=True)
+        }
+        for row in rows
+    }
+
+
+def _iter_helper_months(
+    conn: sqlite3.Connection,
+    subreddit: str,
+) -> Iterator[tuple[str, dict[str, float]]]:
+    """Read helper activity one grouped month at a time for bounded rolling state."""
+    rows = conn.execute(
+        """
+        SELECT s.month, h.commenter, SUM(h.comment_count)
+        FROM helper_counts h
+        JOIN submissions s ON s.submission_id = h.submission_id
+        WHERE s.subreddit = ? AND h.is_non_op = 1
+        GROUP BY s.month, h.commenter
+        ORDER BY s.month, h.commenter
+        """,
+        (subreddit,),
+    )
+    current_month: str | None = None
+    weights: dict[str, float] = {}
+    for month, commenter, count in rows:
+        normalized_month = str(month)
+        if current_month is not None and normalized_month != current_month:
+            yield current_month, weights
+            weights = {}
+        current_month = normalized_month
+        weights[str(commenter)] = float(count)
+    if current_month is not None:
+        yield current_month, weights
+
+
+def _subtract_weights(target: Counter[str], values: dict[str, float]) -> None:
+    """Remove one month's helper weights and discard zero-count helpers."""
+    for author, count in values.items():
+        target[author] -= count
+        if target[author] <= 0:
+            del target[author]
 
 
 def _month_offset(month: str, offset: int) -> str:
