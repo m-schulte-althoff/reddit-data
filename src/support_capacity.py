@@ -184,6 +184,7 @@ def run_support_capacity_analysis(
     if window_months <= 0:
         raise ValueError("window_months must be positive")
     _validate_support_capacity_cache(resolved_sqlite)
+    _ensure_support_capacity_indexes(resolved_sqlite)
     monthly = _build_support_capacity_from_sqlite(resolved_sqlite, window_months=window_months)
     summary = summarize_support_capacity(monthly)
     out_tables = tables_dir or TABLES_DIR
@@ -244,6 +245,27 @@ def _validate_support_capacity_cache(sqlite_path: Path) -> None:
         conn.close()
 
 
+def _ensure_support_capacity_indexes(sqlite_path: Path) -> None:
+    """Create the reusable lookup index needed to avoid repeated full scans."""
+    conn = sqlite3.connect(sqlite_path)
+    try:
+        existing = {
+            str(row[1])
+            for row in conn.execute("PRAGMA index_list('submissions')")
+        }
+        if "idx_submissions_support_capacity" not in existing:
+            log.info("Building one-time support-capacity submissions index; this may take a while")
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_submissions_support_capacity "
+            "ON submissions(subreddit, month, author, submission_id)",
+        )
+        conn.commit()
+        if "idx_submissions_support_capacity" not in existing:
+            log.info("Support-capacity submissions index is ready")
+    finally:
+        conn.close()
+
+
 def _sqlite_subreddit_rows(
     conn: sqlite3.Connection,
     subreddit: str,
@@ -254,19 +276,15 @@ def _sqlite_subreddit_rows(
     months = _sqlite_subreddit_months(conn, subreddit)
     if not months:
         return []
-    author_metrics = _sqlite_author_metrics(conn, subreddit)
+    author_metrics = _sqlite_author_metrics(conn, subreddit, months)
     newcomer_posts = _sqlite_newcomer_posts(conn, subreddit)
-    helper_returns = _sqlite_helper_returns(conn, subreddit)
-    helper_months = iter(_iter_helper_months(conn, subreddit))
-    next_helper_month = next(helper_months, None)
+    helper_by_month = dict(_iter_helper_months(conn, subreddit))
+    helper_returns = _helper_return_metrics(helper_by_month, months)
     helper_windows: deque[dict[str, float]] = deque()
     rolling_weights: Counter[str] = Counter()
     rows: list[dict[str, Any]] = []
     for index, month in enumerate(months):
-        current_helpers: dict[str, float] = {}
-        if next_helper_month is not None and next_helper_month[0] == month:
-            current_helpers = next_helper_month[1]
-            next_helper_month = next(helper_months, None)
+        current_helpers = helper_by_month.get(month, {})
         helper_windows.append(current_helpers)
         rolling_weights.update(current_helpers)
         expired_helpers: dict[str, float] = {}
@@ -320,52 +338,38 @@ def _sqlite_subreddit_months(conn: sqlite3.Connection, subreddit: str) -> list[s
     return iter_month_range(str(row[0]), str(row[1]))
 
 
-def _sqlite_author_metrics(conn: sqlite3.Connection, subreddit: str) -> dict[str, dict[str, float | int]]:
-    """Compute contributor and newcomer retention measures entirely in SQLite."""
-    horizon_columns = ",\n            ".join(
-        f"""CAST(SUM(CASE WHEN EXISTS (
-                SELECT 1 FROM author_months future
-                WHERE future.author = current.author
-                  AND future.month = strftime('%Y-%m', date(current.month || '-01', '+{horizon} months'))
-            ) THEN 1 ELSE 0 END) AS REAL) / COUNT(*) AS contributor_return_{horizon}m,
-            CAST(SUM(CASE WHEN current.month = first_month AND EXISTS (
-                SELECT 1 FROM author_months future
-                WHERE future.author = current.author
-                  AND future.month = strftime('%Y-%m', date(current.month || '-01', '+{horizon} months'))
-            ) THEN 1 ELSE 0 END) AS REAL) /
-                NULLIF(SUM(CASE WHEN current.month = first_month THEN 1 ELSE 0 END), 0) AS newcomer_return_{horizon}m"""
-        for horizon in RETENTION_HORIZONS
-    )
-    rows = conn.execute(
-        f"""
-        WITH author_months AS (
-            SELECT month, author FROM author_activity WHERE subreddit = ?
-        ), first_months AS (
-            SELECT author, MIN(month) AS first_month FROM author_months GROUP BY author
-        )
-        SELECT
-            current.month,
-            COUNT(*) AS active_contributors,
-            SUM(CASE WHEN current.month = first_month THEN 1 ELSE 0 END) AS new_contributors,
-            CAST(SUM(CASE WHEN current.month = first_month THEN 1 ELSE 0 END) AS REAL) / COUNT(*) AS newcomer_share,
-            {horizon_columns}
-        FROM author_months current
-        JOIN first_months USING (author)
-        GROUP BY current.month
-        ORDER BY current.month
-        """,
+def _sqlite_author_metrics(
+    conn: sqlite3.Connection,
+    subreddit: str,
+    months: list[str],
+) -> dict[str, dict[str, float | int]]:
+    """Compute retention linearly from one subreddit's indexed author rows."""
+    authors_by_month: dict[str, set[str]] = {month: set() for month in months}
+    first_month: dict[str, str] = {}
+    for month, author in conn.execute(
+        "SELECT month, author FROM author_activity WHERE subreddit = ? ORDER BY month, author",
         (subreddit,),
-    ).fetchall()
-    columns = ["month", "active_contributors", "new_contributors", "newcomer_share"]
-    for horizon in RETENTION_HORIZONS:
-        columns.extend([f"contributor_return_{horizon}m", f"newcomer_return_{horizon}m"])
-    return {
-        str(row[0]): {
-            column: 0.0 if value is None else value
-            for column, value in zip(columns[1:], row[1:], strict=True)
+    ):
+        normalized_month = str(month)
+        normalized_author = str(author)
+        authors_by_month.setdefault(normalized_month, set()).add(normalized_author)
+        first_month.setdefault(normalized_author, normalized_month)
+
+    metrics: dict[str, dict[str, float | int]] = {}
+    for month in months:
+        current = authors_by_month[month]
+        newcomers = {author for author in current if first_month[author] == month}
+        row: dict[str, float | int] = {
+            "active_contributors": len(current),
+            "new_contributors": len(newcomers),
+            "newcomer_share": _share(len(newcomers), len(current)),
         }
-        for row in rows
-    }
+        for horizon in RETENTION_HORIZONS:
+            future = authors_by_month.get(_month_offset(month, horizon), set())
+            row[f"contributor_return_{horizon}m"] = _share(len(current & future), len(current))
+            row[f"newcomer_return_{horizon}m"] = _share(len(newcomers & future), len(newcomers))
+        metrics[month] = row
+    return metrics
 
 
 def _sqlite_newcomer_posts(conn: sqlite3.Connection, subreddit: str) -> dict[str, dict[str, float | int]]:
@@ -400,40 +404,22 @@ def _sqlite_newcomer_posts(conn: sqlite3.Connection, subreddit: str) -> dict[str
     }
 
 
-def _sqlite_helper_returns(conn: sqlite3.Connection, subreddit: str) -> dict[str, dict[str, float]]:
-    """Compute helper retention at each horizon from distinct helper-month rows."""
-    horizons = ",\n            ".join(
-        f"""CAST(SUM(CASE WHEN EXISTS (
-                SELECT 1 FROM helper_months future
-                WHERE future.commenter = current.commenter
-                  AND future.month = strftime('%Y-%m', date(current.month || '-01', '+{horizon} months'))
-            ) THEN 1 ELSE 0 END) AS REAL) / COUNT(*) AS helper_return_{horizon}m"""
-        for horizon in RETENTION_HORIZONS
-    )
-    rows = conn.execute(
-        f"""
-        WITH helper_months AS (
-            SELECT s.month, h.commenter
-            FROM helper_counts h
-            JOIN submissions s ON s.submission_id = h.submission_id
-            WHERE s.subreddit = ? AND h.is_non_op = 1
-            GROUP BY s.month, h.commenter
-        )
-        SELECT current.month, {horizons}
-        FROM helper_months current
-        GROUP BY current.month
-        ORDER BY current.month
-        """,
-        (subreddit,),
-    ).fetchall()
-    columns = [f"helper_return_{horizon}m" for horizon in RETENTION_HORIZONS]
-    return {
-        str(row[0]): {
-            column: 0.0 if value is None else float(value)
-            for column, value in zip(columns, row[1:], strict=True)
+def _helper_return_metrics(
+    helper_by_month: dict[str, dict[str, float]],
+    months: list[str],
+) -> dict[str, dict[str, float]]:
+    """Compute helper return rates from a single subreddit's grouped helper months."""
+    result: dict[str, dict[str, float]] = {}
+    for month in months:
+        current = set(helper_by_month.get(month, {}))
+        result[month] = {
+            f"helper_return_{horizon}m": _share(
+                len(current & set(helper_by_month.get(_month_offset(month, horizon), {})),),
+                len(current),
+            )
+            for horizon in RETENTION_HORIZONS
         }
-        for row in rows
-    }
+    return result
 
 
 def _iter_helper_months(

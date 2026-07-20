@@ -98,6 +98,10 @@ def test_nondefault_window_uses_distinct_output_filenames(tmp_path: Path) -> Non
     )
 
     assert result.table_paths["monthly"].name == "support-capacity-24m-monthly.csv"
+    conn = sqlite3.connect(sqlite_path)
+    index_names = {row[1] for row in conn.execute("PRAGMA index_list('submissions')")}
+    conn.close()
+    assert "idx_submissions_support_capacity" in index_names
 
 
 def test_support_capacity_streams_sqlite_cache_metrics(tmp_path: Path) -> None:
