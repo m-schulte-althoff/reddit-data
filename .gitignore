@@ -1,6 +1,7 @@
 data/
 output/
 input/Literatur/
+manuscript/
 *.complete
 logs/
 *.duckdb

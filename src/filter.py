@@ -6,9 +6,9 @@ writes matching records to ``data/processed/``.
 Resumability
 ------------
 A sidecar ``<output>.progress.json`` tracks which input files have been
-fully processed.  On resume the completed files are skipped and new
-frames are appended to the same output.  Multiple zstd frames in one
-file are valid and decompress transparently.
+fully processed and their committed output byte offset. On resume any
+uncommitted tail is discarded before new frames are appended. Multiple
+zstd frames in one file are valid and decompress transparently.
 
 Performance
 -----------
@@ -25,7 +25,9 @@ import ast
 import io
 import json
 import logging
+import os
 import re
+import tempfile
 import time
 from pathlib import Path
 
@@ -160,12 +162,25 @@ def _load_progress(output_path: Path) -> dict:
     pp = _progress_path(output_path)
     if pp.exists():
         return json.loads(pp.read_text(encoding="utf-8"))
-    return {"completed_files": [], "rows_written": 0}
+    return {"completed_files": [], "rows_written": 0, "output_bytes": 0}
 
 
 def _save_progress(output_path: Path, progress: dict) -> None:
-    pp = _progress_path(output_path)
-    pp.write_text(json.dumps(progress, indent=2), encoding="utf-8")
+    """Atomically replace a checkpoint after its output has been flushed."""
+    pp = _progress_path(output_path).resolve()
+    with tempfile.NamedTemporaryFile(mode="w", dir=pp.parent, suffix=".tmp", delete=False) as fout:
+        temporary = Path(fout.name)
+        try:
+            json.dump(progress, fout, indent=2)
+            fout.flush()
+            os.fsync(fout.fileno())
+        except BaseException:
+            temporary.unlink(missing_ok=True)
+            raise
+    try:
+        temporary.replace(pp)
+    finally:
+        temporary.unlink(missing_ok=True)
 
 
 # ── Core filter engine ──────────────────────────────────────────────────────
@@ -290,7 +305,30 @@ def filter_by_subreddit(
         return {"output_file": str(output_path), "rows_read": 0, "rows_written": 0, "per_file": []}
 
     # ── Resume logic ──
-    progress = _load_progress(output_path) if resume else {"completed_files": [], "rows_written": 0}
+    progress_exists = _progress_path(output_path).exists()
+    progress = _load_progress(output_path) if resume else {
+        "completed_files": [], "rows_written": 0, "output_bytes": 0,
+    }
+    if resume:
+        if "output_bytes" not in progress:
+            raise ValueError(
+                f"Legacy checkpoint has no committed output offset: {_progress_path(output_path)}. "
+                "Validate and migrate it, or rebuild with --no-resume."
+            )
+        committed = progress["output_bytes"]
+        if not isinstance(committed, int) or committed < 0:
+            raise ValueError("Checkpoint output_bytes must be a nonnegative integer")
+        if output_path.exists():
+            if not progress_exists and output_path.stat().st_size:
+                raise ValueError(f"Existing output has no checkpoint: {output_path}")
+            if output_path.stat().st_size < committed:
+                raise ValueError(f"Output is shorter than its committed checkpoint: {output_path}")
+            if output_path.stat().st_size > committed:
+                log.warning("Discarding uncommitted output after byte %d in %s", committed, output_path)
+                with output_path.open("r+b") as fout:
+                    fout.truncate(committed)
+        elif committed or progress["completed_files"]:
+            raise FileNotFoundError(f"Checkpoint output is missing: {output_path}")
     completed_set = set(progress["completed_files"])
     pending = [p for p in all_paths if p.name not in completed_set]
 
@@ -314,13 +352,17 @@ def filter_by_subreddit(
     subreddits_bytes = _subreddit_set_to_bytes(subreddits)
 
     # Append mode ("ab") for resume; fresh write ("wb") otherwise.
-    mode = "ab" if (resume and completed_set and output_path.exists()) else "wb"
+    mode = "ab" if resume and output_path.exists() else "wb"
     total_read = 0
     total_written = progress["rows_written"] if mode == "ab" else 0
     per_file: list[dict] = []
 
     cctx = zstd.ZstdCompressor(level=OUTPUT_ZSTD_LEVEL)
     with output_path.open(mode) as fout:
+        if not resume or not progress_exists:
+            fout.flush()
+            os.fsync(fout.fileno())
+            _save_progress(output_path, progress)
         for input_path in pending:
             # Each file gets its own zstd frame (valid multi-frame file).
             with cctx.stream_writer(fout, closefd=False) as zout:
@@ -336,9 +378,12 @@ def filter_by_subreddit(
             total_read += stats["rows_read"]
             total_written += stats["rows_written"]
 
-            # Update progress after each file so a crash loses at most one.
+            # Commit only durable, complete frames; resume rolls back any later bytes.
+            fout.flush()
+            os.fsync(fout.fileno())
             progress["completed_files"].append(input_path.name)
             progress["rows_written"] = total_written
+            progress["output_bytes"] = fout.tell()
             _save_progress(output_path, progress)
 
     log.info(

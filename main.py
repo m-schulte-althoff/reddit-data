@@ -38,6 +38,8 @@ Commands:
                     Analyze rolling helper capacity and contributor retention.
     community-profiles
                     Build exploratory health-community growth profiles.
+    support-dynamics
+                    Measure event-time helper renewal and capacity relative to demand.
     wip            Run the full WIP suite and write key-result summaries.
     describe       Descriptive overview of filtered data (trends, per-subreddit).
     discursivity   Comment-depth / threading metrics from filtered data.
@@ -376,6 +378,14 @@ def cmd_support_capacity() -> int:
     return 0
 
 
+def cmd_support_dynamics() -> int:
+    """Measure event-time helper replenishment and capacity relative to demand."""
+    from src.support_dynamics import run_support_dynamics_analysis
+
+    run_support_dynamics_analysis()
+    return 0
+
+
 def cmd_community_profiles() -> int:
     """Build exploratory health-community growth profiles from existing panels."""
     from src.community_profiles import run_community_profile_analysis
@@ -595,6 +605,10 @@ COMMANDS: dict[str, tuple[callable, str]] = {  # type: ignore[type-arg]
     "community-profiles": (
         cmd_community_profiles,
         "Exploratory health-community growth profiles",
+    ),
+    "support-dynamics": (
+        cmd_support_dynamics,
+        "Event-time helper replenishment and capacity relative to demand",
     ),
     "wip": (cmd_wip, "Run the full WIP suite and key-result summaries"),
     "describe": (cmd_describe, "Descriptive overview of filtered data"),

@@ -148,7 +148,18 @@ def build_support_capacity_monthly(
                     len(current_helpers & future_helpers), len(current_helpers),
                 )
             rows.append(row)
-    return pd.DataFrame(rows).sort_values(["subreddit", "month"], kind="stable").reset_index(drop=True)
+    monthly = pd.DataFrame(rows).sort_values(["subreddit", "month"], kind="stable").reset_index(drop=True)
+    observation_end = pd.concat([author_activity["month"], submissions["month"]]).max()
+    return _mask_unobserved_returns(monthly, observation_end)
+
+
+def _mask_unobserved_returns(monthly: pd.DataFrame, observation_end: str) -> pd.DataFrame:
+    """Exclude follow-up beyond corpus coverage, preserving observed zero returns."""
+    for horizon in RETENTION_HORIZONS:
+        unobserved = monthly["month"].map(lambda month: _month_offset(month, horizon)) > observation_end
+        columns = [f"{group}_return_{horizon}m" for group in ("newcomer", "contributor", "helper")]
+        monthly.loc[unobserved, columns] = float("nan")
+    return monthly
 
 
 def summarize_support_capacity(monthly: pd.DataFrame) -> pd.DataFrame:
@@ -213,6 +224,11 @@ def _build_support_capacity_from_sqlite(sqlite_path: Path, *, window_months: int
     """Build monthly measures with bounded memory from SQLite aggregates."""
     conn = sqlite3.connect(f"file:{sqlite_path}?mode=ro", uri=True)
     try:
+        observation_end = conn.execute(
+            "SELECT MAX(month) FROM ("
+            "SELECT MAX(month) AS month FROM author_activity UNION ALL "
+            "SELECT MAX(month) AS month FROM submissions)",
+        ).fetchone()[0]
         subreddits = [str(row[0]) for row in conn.execute(
             "SELECT DISTINCT subreddit FROM author_activity ORDER BY subreddit",
         )]
@@ -222,7 +238,8 @@ def _build_support_capacity_from_sqlite(sqlite_path: Path, *, window_months: int
             rows.extend(_sqlite_subreddit_rows(conn, subreddit, window_months=window_months))
     finally:
         conn.close()
-    return pd.DataFrame(rows).sort_values(["subreddit", "month"], kind="stable").reset_index(drop=True)
+    monthly = pd.DataFrame(rows).sort_values(["subreddit", "month"], kind="stable").reset_index(drop=True)
+    return _mask_unobserved_returns(monthly, observation_end)
 
 
 def _validate_support_capacity_cache(sqlite_path: Path) -> None:

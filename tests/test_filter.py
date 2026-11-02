@@ -4,6 +4,9 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import orjson
+import pytest
+
 from tests.conftest import read_zst_jsonl, write_zst_jsonl
 from src.filter import (
     _discover_raw_paths,
@@ -366,3 +369,89 @@ def test_filter_no_files(tmp_path: Path) -> None:
     )
     assert result["rows_read"] == 0
     assert result["rows_written"] == 0
+
+
+@pytest.mark.parametrize("interrupted_month", ["2022-06", "2022-07"])
+def test_filter_resume_discards_interrupted_frame(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, interrupted_month: str,
+) -> None:
+    """Retrying a partial first or later input must write each record only once."""
+    from src import filter as module
+
+    raw_dir, output_dir = tmp_path / "raw", tmp_path / "processed"
+    records = {
+        month: [{"id": month + name, "subreddit": "science"} for name in ("a", "b")]
+        for month in ("2022-06", "2022-07")
+    }
+    for month, rows in records.items():
+        write_zst_jsonl(raw_dir / "reddit/comments" / f"RC_{month}.zst", rows)
+    original = module._filter_file
+
+    def interrupted(path, zout, *args):
+        if interrupted_month in path.name:
+            zout.write(orjson.dumps(records[interrupted_month][0]) + b"\n")
+            raise RuntimeError("interrupted")
+        return original(path, zout, *args)
+
+    monkeypatch.setattr(module, "_filter_file", interrupted)
+    with pytest.raises(RuntimeError, match="interrupted"):
+        filter_by_subreddit("comments", {"r/science"}, raw_dir=raw_dir, output_dir=output_dir)
+    monkeypatch.setattr(module, "_filter_file", original)
+    result = filter_by_subreddit("comments", {"r/science"}, raw_dir=raw_dir, output_dir=output_dir)
+    output = Path(result["output_file"])
+    assert [r["id"] for r in read_zst_jsonl(output)] == [
+        "2022-06a", "2022-06b", "2022-07a", "2022-07b",
+    ]
+    assert result["rows_written"] == 4
+    assert _load_progress(output)["output_bytes"] == output.stat().st_size
+    before = output.read_bytes()
+    filter_by_subreddit("comments", {"r/science"}, raw_dir=raw_dir, output_dir=output_dir)
+    assert output.read_bytes() == before
+
+
+@pytest.mark.parametrize("problem", ["legacy", "missing", "short", "orphan"])
+def test_filter_resume_rejects_unsafe_checkpoint(raw_tree: Path, problem: str) -> None:
+    """An invalid checkpoint must fail before changing any surviving data."""
+    raw_dir, output_dir = raw_tree / "data/raw", raw_tree / "data/processed"
+    result = filter_by_subreddit("comments", {"r/science"}, raw_dir=raw_dir, output_dir=output_dir)
+    output = Path(result["output_file"])
+    progress = _load_progress(output)
+    if problem == "legacy":
+        del progress["output_bytes"]
+        _save_progress(output, progress)
+    elif problem == "missing":
+        output.unlink()
+    elif problem == "short":
+        output.write_bytes(output.read_bytes()[:-1])
+    else:
+        output.with_suffix(".zst.progress.json").unlink()
+    before = output.read_bytes() if output.exists() else None
+    with pytest.raises((ValueError, FileNotFoundError)):
+        filter_by_subreddit("comments", {"r/science"}, raw_dir=raw_dir, output_dir=output_dir)
+    assert (output.read_bytes() if output.exists() else None) == before
+
+
+def test_save_progress_preserves_symlink_and_previous_checkpoint_on_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Atomic updates preserve the sidecar symlink and the previous valid JSON."""
+    from src import filter as module
+
+    target = tmp_path / "checkpoint.json"
+    target.write_text('{"rows_written": 1}')
+    output = tmp_path / "data.zst"
+    sidecar = output.with_suffix(".zst.progress.json")
+    sidecar.symlink_to(target)
+    _save_progress(output, {"rows_written": 2})
+    assert sidecar.is_symlink()
+    previous = target.read_bytes()
+
+    def failed_replace(*args):
+        raise OSError("simulated checkpoint failure")
+
+    monkeypatch.setattr(module.os, "fsync", failed_replace)
+    with pytest.raises(OSError, match="checkpoint failure"):
+        _save_progress(output, {"rows_written": 3})
+    assert target.read_bytes() == previous
+    assert sidecar.is_symlink()
+    assert not list(tmp_path.glob("*.tmp"))

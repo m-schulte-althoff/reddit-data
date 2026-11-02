@@ -140,6 +140,13 @@ Edit `src/config.py` to change:
 | `hf-extract` | Extract filtered parquet from the Hugging Face mirror. |
 | `hf-list` | List available months on the Hugging Face mirror. |
 
+Subreddit filtering checkpoints record the committed compressed output size.
+After an interrupted run, resume discards any bytes written after that checkpoint
+before retrying the unfinished raw file. Checkpoints are replaced atomically only
+after complete frames have been flushed to disk. A missing or shortened output,
+or a legacy checkpoint without `output_bytes`, requires explicit validation and
+migration or a fresh run with `--no-resume`; resume never guesses a safe offset.
+
 ## File structure
 
 ```
@@ -244,6 +251,14 @@ contributor return at 1/3/6 months, rolling active/effective helpers, helper
 return, and helper-set overlap. Interaction-outcome reports include
 Benjamini-Hochberg FDR-adjusted p-values within each model family; secondary and
 exploratory outcomes should be interpreted accordingly.
+
+Support-capacity return rates are missing when their follow-up month extends
+beyond the corpus endpoint, and are exported as blank CSV cells. Summaries
+exclude those missing outcomes. The endpoint is computed across the input
+corpus, so a community that becomes inactive earlier can still have observed
+zero returns. For the current December 2025 endpoint, one-month returns are
+missing for December 2025, three-month returns for October–December 2025, and
+six-month returns for July–December 2025.
 
 ### Optional low-memory thread prep
 
@@ -511,7 +526,24 @@ A sidecar `.progress.json` file tracks which input files have been processed.
 On subsequent runs the already-completed files are skipped and new data is
 appended as additional zstd frames.
 
-## Development
+## Manuscript and helper renewal
+
+The first AIS-style paper draft is in [`manuscript/`](manuscript/README.md).
+The empirical extension reuses the audited thread partitions and tables:
+
+```bash
+uv run python3 main.py support-dynamics
+uv run python3 manuscript/build.py
+```
+
+`support-dynamics` writes new `output/tables/support-dynamics-*.csv` outputs for
+event-time helper replenishment, newcomer-poster conversion, demand-normalized
+capacity, and descriptive associations. It does not rerun the full rebuild.
+The first event-time scan is substantial; completed worker chunks and matching
+results are cached. The manuscript README documents dates, denominators,
+censoring, reproduction, and the PDF build.
+
+## Development checks
 
 ```bash
 uv run ruff check .

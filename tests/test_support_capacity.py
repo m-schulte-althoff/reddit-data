@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import sqlite3
+import io
 import pandas as pd
 import pytest
 from pathlib import Path
 
 from src.support_capacity import (
+    _build_support_capacity_from_sqlite,
     build_support_capacity_monthly,
     run_support_capacity_analysis,
     summarize_support_capacity,
@@ -53,6 +55,51 @@ def test_support_capacity_tracks_helpers_newcomers_and_returns() -> None:
     assert december["newcomer_return_1m"] == pytest.approx(1.0)
     assert december["rolling_active_helpers"] == 1
     assert december["rolling_effective_helpers"] == pytest.approx(1.0)
+
+
+@pytest.mark.parametrize("backend", ["dataframe", "sqlite"])
+def test_retention_masks_followup_beyond_global_coverage(tmp_path: Path, backend: str) -> None:
+    """Unavailable follow-up is missing; observed non-return and boundary months remain valid."""
+    activity = pd.DataFrame([
+        {"subreddit": "Anxiety", "month": month, "author": "alice"}
+        for month in ("2025-06", "2025-09", "2025-11", "2025-12")
+    ] + [{"subreddit": "Asthma", "month": "2025-06", "author": "bob"}])
+    submissions = pd.DataFrame([
+        {"submission_id": str(index), "subreddit": row.subreddit, "month": row.month, "author": "op"}
+        for index, row in enumerate(activity.itertuples())
+    ])
+    posts = pd.DataFrame([
+        {"submission_id": row.submission_id, "num_comments_observed": 1}
+        for row in submissions.itertuples()
+    ])
+    helpers = pd.DataFrame([
+        {"submission_id": str(index), "commenter": row.author, "is_non_op": 1, "comment_count": 1}
+        for index, row in enumerate(activity.itertuples())
+    ])
+    if backend == "dataframe":
+        monthly = build_support_capacity_monthly(activity, submissions, posts, helpers)
+    else:
+        path = tmp_path / "cache.sqlite"
+        with sqlite3.connect(path) as conn:
+            for name, frame in [("author_activity", activity), ("submissions", submissions),
+                                ("post_metrics", posts), ("helper_counts", helpers)]:
+                frame.to_sql(name, conn, index=False)
+        monthly = _build_support_capacity_from_sqlite(path, window_months=12)
+    anxiety = monthly.loc[monthly["subreddit"] == "Anxiety"].set_index("month")
+    for horizon, boundary in [(1, "2025-11"), (3, "2025-09"), (6, "2025-06")]:
+        for group in ("newcomer", "contributor", "helper"):
+            column = f"{group}_return_{horizon}m"
+            assert pd.notna(anxiety.loc[boundary, column])
+            assert anxiety.loc[anxiety.index > boundary, column].isna().all()
+        assert anxiety.loc[boundary, f"contributor_return_{horizon}m"] == pytest.approx(1.0)
+        assert anxiety.loc[boundary, f"helper_return_{horizon}m"] == pytest.approx(1.0)
+    asthma = monthly.loc[monthly["subreddit"] == "Asthma"].iloc[0]
+    assert asthma["contributor_return_6m"] == 0.0
+    assert asthma["helper_return_6m"] == 0.0
+    summary = summarize_support_capacity(monthly)
+    assert summary.loc[summary["period"] == "post", "contributor_return_6m"].iloc[0] == pytest.approx(0.5)
+    exported = pd.read_csv(io.StringIO(monthly.to_csv(index=False)))
+    assert exported.loc[exported["month"] == "2025-12", "contributor_return_1m"].isna().all()
 
 
 def test_support_capacity_summary_omits_transition_month() -> None:
